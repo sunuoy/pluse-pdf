@@ -1,0 +1,6 @@
+{
+  "name": "PulsePDF Reader",
+  "description": "An expressive M3 PDF Reader featuring smooth bouncier text highlights, real-time onscreen translations, mobile OCR text scanner, and Gemini AI-powered research summaries.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
