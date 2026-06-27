@@ -72,7 +72,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 
 enum class ScreenType {
-    Dashboard, Reader, OCRScanner, SyncConsole
+    Dashboard, Reader, OCRScanner
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -249,20 +249,6 @@ fun PulsePdfApp(viewModel: PdfViewModel) {
                             ),
                             modifier = Modifier.testTag("nav_ocr_tab")
                         )
-                        NavigationBarItem(
-                            selected = currentScreen == ScreenType.SyncConsole,
-                            onClick = { currentScreen = ScreenType.SyncConsole },
-                            icon = { Icon(Icons.Default.Sync, contentDescription = "Cloud Sync") },
-                            label = { Text("Cloud Sync") },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = Color(0xFF1D192B),
-                                selectedTextColor = Color(0xFF1D192B),
-                                unselectedIconColor = Color(0xFF49454F),
-                                unselectedTextColor = Color(0xFF49454F),
-                                indicatorColor = Color(0xFFE8DEF8)
-                            ),
-                            modifier = Modifier.testTag("nav_sync_tab")
-                        )
                     }
                 }
             }
@@ -293,7 +279,6 @@ fun PulsePdfApp(viewModel: PdfViewModel) {
                         ScreenType.Dashboard -> DashboardScreen(
                             viewModel = viewModel,
                             onOpenOcr = { currentScreen = ScreenType.OCRScanner },
-                            onOpenSync = { currentScreen = ScreenType.SyncConsole },
                             onOpenMenu = { onOpenMenu() },
                             onPickPdf = { pdfPickerLauncher.launch("application/pdf") }
                         )
@@ -305,10 +290,6 @@ fun PulsePdfApp(viewModel: PdfViewModel) {
                             }
                         )
                         ScreenType.OCRScanner -> OcrScannerScreen(
-                            viewModel = viewModel,
-                            onOpenMenu = { onOpenMenu() }
-                        )
-                        ScreenType.SyncConsole -> SyncConsoleScreen(
                             viewModel = viewModel,
                             onOpenMenu = { onOpenMenu() }
                         )
@@ -344,12 +325,10 @@ fun PulsePdfApp(viewModel: PdfViewModel) {
 fun DashboardScreen(
     viewModel: PdfViewModel,
     onOpenOcr: () -> Unit,
-    onOpenSync: () -> Unit,
     onOpenMenu: () -> Unit,
     onPickPdf: () -> Unit
 ) {
     val docs by viewModel.documents.collectAsStateWithLifecycle()
-    val syncState by viewModel.syncingState.collectAsStateWithLifecycle()
 
     Column(
         modifier = Modifier
@@ -386,86 +365,37 @@ fun DashboardScreen(
                     color = Color(0xFF1D1B20)
                 )
                 Text(
-                    text = "Research Engine & Cloud Sync",
+                    text = "Research Engine & PDF Reader",
                     fontSize = 12.sp,
                     color = Color(0xFF6750A4),
                     fontWeight = FontWeight.Bold
                 )
             }
-
-            Box(
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(CircleShape)
-                    .background(Color(0xFFF3EDF7))
-                    .clickable { onOpenSync() },
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Cloud,
-                    contentDescription = "Cloud Status",
-                    tint = if (syncState == SyncState.Syncing) Color(0xFF6750A4) else Color(0xFF1D1B20)
-                )
-            }
         }
 
         // Feature shortcuts in dynamic bouncing shapes!
-        Row(
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(bottom = 24.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(bottom = 24.dp)
+                .height(90.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color(0xFFEADDFF))
+                .clickable { onOpenOcr() }
+                .padding(16.dp),
+            contentAlignment = Alignment.CenterStart
         ) {
-            // Quick OCR Card - Live OCR theme color EADDFF / 21005D
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(90.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Color(0xFFEADDFF))
-                    .clickable { onOpenOcr() }
-                    .padding(16.dp),
-                contentAlignment = Alignment.CenterStart
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.CameraAlt,
-                        contentDescription = "Scan icon",
-                        tint = Color(0xFF21005D),
-                        modifier = Modifier.size(28.dp)
-                    )
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column {
-                        Text("OCR Cam Scanner", color = Color(0xFF21005D), fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        Text("Extract paper text", color = Color(0xFF49454F), fontSize = 11.sp)
-                    }
-                }
-            }
-
-            // Cloud Sync Console Status - Secondary border card styling
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(90.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .border(BorderStroke(1.dp, Color(0xFFCAC4D0)), RoundedCornerShape(16.dp))
-                    .background(Color(0xFFFFFFFF))
-                    .clickable { onOpenSync() }
-                    .padding(16.dp),
-                contentAlignment = Alignment.CenterStart
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.Devices,
-                        contentDescription = "Sync Console",
-                        tint = Color(0xFF49454F),
-                        modifier = Modifier.size(28.dp)
-                    )
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column {
-                        Text("Cloud Sync", color = Color(0xFF1D1B20), fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        Text("4 Devices linked", color = Color(0xFF49454F), fontSize = 11.sp)
-                    }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.CameraAlt,
+                    contentDescription = "Scan icon",
+                    tint = Color(0xFF21005D),
+                    modifier = Modifier.size(28.dp)
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Column {
+                    Text("OCR Cam Scanner", color = Color(0xFF21005D), fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text("Extract paper text dynamically", color = Color(0xFF49454F), fontSize = 11.sp)
                 }
             }
         }
@@ -597,7 +527,7 @@ fun DocumentCardItem(
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = Color.White),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-        border = BorderStroke(1.dp, if (!document.isSynced) Color(0xFFEF4444) else Color(0xFFCAC4D0))
+        border = BorderStroke(1.dp, Color(0xFFCAC4D0))
     ) {
         Column(
             modifier = Modifier.padding(18.dp)
@@ -615,22 +545,6 @@ fun DocumentCardItem(
                         .padding(horizontal = 8.dp, vertical = 4.dp)
                 ) {
                     Text("PDF DOCUMENT", color = Color(0xFF21005D), fontSize = 9.sp, fontWeight = FontWeight.Bold)
-                }
-
-                // Sync status icon
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = if (document.isSynced) Icons.Default.CheckCircle else Icons.Default.SyncProblem,
-                        contentDescription = "Sync state",
-                        tint = if (document.isSynced) Color(0xFF0F5132) else Color(0xFF842029),
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = if (document.isSynced) "Synced" else "Changes Pending",
-                        fontSize = 11.sp,
-                        color = if (document.isSynced) Color(0xFF0F5132) else Color(0xFF842029)
-                    )
                 }
             }
 
@@ -2904,7 +2818,7 @@ fun OcrScannerScreen(
                         Button(
                             onClick = {
                                 viewModel.importScannedTextAsDoc(inputDocName, ocrText)
-                                Toast.makeText(context, "Successfully imported Doc to Cloud Sync Database!", Toast.LENGTH_LONG).show()
+                                Toast.makeText(context, "Successfully saved document!", Toast.LENGTH_LONG).show()
                                 hasRequestedScan = false
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6750A4)),
@@ -2914,268 +2828,9 @@ fun OcrScannerScreen(
                                 .testTag("import_ocr_doc_button"),
                             shape = RoundedCornerShape(25.dp)
                         ) {
-                            Icon(Icons.Default.CloudUpload, contentDescription = "Cloud Upload")
+                            Icon(Icons.Default.CloudUpload, contentDescription = "Save document")
                             Spacer(modifier = Modifier.width(10.dp))
-                            Text("SAVE TO CLOUD & SYNC DEVICES", color = Color.White, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-// Modern sync hub monitoring local vs remote logs of mobile + desktop
-@Composable
-fun SyncConsoleScreen(
-    viewModel: PdfViewModel,
-    onOpenMenu: () -> Unit
-) {
-    val devices by viewModel.devices.collectAsStateWithLifecycle()
-    val syncState by viewModel.syncingState.collectAsStateWithLifecycle()
-
-    var showSyncSuccessCelebration by remember { mutableStateOf(false) }
-
-    LaunchedEffect(syncState) {
-        if (syncState == SyncState.Success) {
-            showSyncSuccessCelebration = true
-        } else if (syncState == SyncState.Idle) {
-            showSyncSuccessCelebration = false
-        }
-    }
-
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-    ) {
-        item {
-            // Dashboard header
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(
-                    onClick = onOpenMenu,
-                    modifier = Modifier.testTag("sync_menu_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Menu,
-                        contentDescription = "Open Navigation Menu",
-                        tint = Color(0xFF6750A4),
-                        modifier = Modifier.size(28.dp)
-                    )
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "Pulse Sync Hub",
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = Color(0xFF1D1B20)
-                    )
-                    Text(
-                        "Cross-platform Sync Monitor Console",
-                        fontSize = 11.sp,
-                        color = Color(0xFF49454F)
-                    )
-                }
-
-                // Beautiful glowing sync dot
-                Box(
-                    modifier = Modifier
-                        .size(12.dp)
-                        .clip(CircleShape)
-                        .background(if (syncState == SyncState.Syncing) Color(0xFF6750A4) else Color(0xFF0F5132))
-                )
-            }
-
-            // Sync controller card - Crisp White layout with subtle shadow & border
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 24.dp),
-                shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                border = BorderStroke(1.dp, Color(0xFFCAC4D0))
-            ) {
-                Column(
-                    modifier = Modifier.padding(20.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Icon(
-                        imageVector = if (syncState == SyncState.Syncing) Icons.Default.Cyclone else Icons.Default.CloudCircle,
-                        contentDescription = "Syncing logo",
-                        tint = Color(0xFF6750A4),
-                        modifier = Modifier
-                            .size(72.dp)
-                            .rotate(
-                                if (syncState == SyncState.Syncing) {
-                                    val rotation = rememberInfiniteTransition()
-                                    val angle by rotation.animateFloat(
-                                        initialValue = 0f,
-                                        targetValue = 360f,
-                                        animationSpec = infiniteRepeatable(
-                                            animation = tween(1200, easing = LinearEasing),
-                                            repeatMode = RepeatMode.Restart
-                                        ),
-                                        label = "rotate"
-                                    )
-                                    angle
-                                } else 0f
-                            )
-                    )
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    Text(
-                        text = when (syncState) {
-                            SyncState.Idle -> "All Files Synced Successfully"
-                            SyncState.Syncing -> "Synchronizing connected device stacks..."
-                            SyncState.Success -> "Synchronization Completed (Green Level)"
-                        },
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF1D1B20),
-                        textAlign = TextAlign.Center
-                    )
-
-                    Text(
-                        text = "Encrypted TLS Tunnel v2.1 • Multi-device validation",
-                        fontSize = 11.sp,
-                        color = Color(0xFF49454F),
-                        modifier = Modifier.padding(top = 4.dp, bottom = 18.dp)
-                    )
-
-                    Button(
-                        onClick = { viewModel.syncCloudDocuments() },
-                        enabled = syncState == SyncState.Idle,
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6750A4)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(50.dp)
-                            .testTag("trigger_sync_button"),
-                        shape = RoundedCornerShape(25.dp)
-                    ) {
-                        Text(
-                            text = if (syncState == SyncState.Syncing) "COMMUNICATING WITH SERVERS..." else "FORCE CLOUD SYNC NOW",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp
-                        )
-                    }
-                }
-            }
-
-            // Sync successful popup banner - styled with pleasant soothing colors
-            AnimatedVisibility(
-                visible = showSyncSuccessCelebration,
-                enter = expandVertically() + fadeIn(),
-                exit = shrinkVertically() + fadeOut()
-            ) {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 16.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFFDEF7EC)),
-                    border = BorderStroke(1.dp, Color(0xFF31C48D))
-                ) {
-                    Row(
-                        modifier = Modifier.padding(14.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Default.Verified, contentDescription = "Verified Sync", tint = Color(0xFF03543F))
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            "Express Sync Successful! Desktop & Tablet nodes updated safely.",
-                            color = Color(0xFF03543F),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-            }
-
-            // Peer Connected Status list
-            Text(
-                "Connected Ecosystem Members (${devices.size})",
-                fontWeight = FontWeight.Bold,
-                color = Color(0xFF1D1B20),
-                fontSize = 16.sp,
-                modifier = Modifier.padding(bottom = 12.dp)
-            )
-
-            Column(
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                devices.forEach { device ->
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = Color.White),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-                        border = BorderStroke(1.dp, Color(0xFFCAC4D0))
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(14.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            // Device icon based on tag
-                            Icon(
-                                imageVector = when (device.deviceType) {
-                                    "Desktop Editor" -> Icons.Default.LaptopMac
-                                    "Tablet Viewer" -> Icons.Default.TabletMac
-                                    "Web Reader" -> Icons.Default.Language
-                                    else -> Icons.Default.PhoneIphone
-                                },
-                                contentDescription = "DeviceType",
-                                tint = if (device.isMainDevice) Color(0xFF6750A4) else Color(0xFF49454F),
-                                modifier = Modifier.size(28.dp)
-                            )
-
-                            Spacer(modifier = Modifier.width(16.dp))
-
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = device.name,
-                                    color = Color(0xFF1D1B20),
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp
-                                )
-                                Text(
-                                    text = "${device.deviceType} • Last Sync: just now",
-                                    color = Color(0xFF49454F),
-                                    fontSize = 11.sp
-                                )
-                            }
-
-                            // Connection status dynamic badge - beautiful high-fidelity designs
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(4.dp))
-                                    .background(
-                                        when (device.status) {
-                                            "Offline" -> Color(0xFFFDE8E8)
-                                            "Syncing" -> Color(0xFFFEF08A)
-                                            else -> Color(0xFFDEF7EC)
-                                        }
-                                    )
-                                    .padding(horizontal = 8.dp, vertical = 4.dp)
-                            ) {
-                                Text(
-                                    text = device.status.uppercase(),
-                                    color = when (device.status) {
-                                        "Offline" -> Color(0xFF9B1C1C)
-                                        "Syncing" -> Color(0xFF713F12)
-                                        else -> Color(0xFF03543F)
-                                    },
-                                    fontSize = 9.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
+                            Text("SAVE AS NEW DOCUMENT", color = Color.White, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
