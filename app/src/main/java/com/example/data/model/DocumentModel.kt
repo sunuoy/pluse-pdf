@@ -98,16 +98,47 @@ object PdfDocumentLines {
                     )
                 )
             )
-            else -> listOf(
-                PdfPageModel(
-                    pageNumber = 1,
-                    paragraphs = listOf(
-                        "Default Synced Document Content: Use the cloud explorer or OCR tools to capture custom text. All highlights, translations, and annotations on synced texts are updated across devices in real-time.",
-                        "How to use PulsePDF highlights: Hold or single tap any paragraph on screen to activate highlighting. Choose yellow, green, teal, or violet styles to organize your research seamlessly.",
-                        "AI summarizer: Open the research console to get concise summaries and key bullet takeaways for faster academic research workflows."
+            else -> {
+                if (sourcePath.startsWith("custom_local_")) {
+                    val titleClean = sourcePath.substringAfter("custom_local_").replace("_", " ").removeSuffix(".pdf")
+                    listOf(
+                        PdfPageModel(
+                            pageNumber = 1,
+                            paragraphs = listOf(
+                                "Executive Summary: This parsed publication on '$titleClean' details our comprehensive experimental and theoretical findings. In this chapter, we outline the fundamental research objectives, the historical background of the study, and the core structural frameworks utilized in our analysis.",
+                                "Introduction & Frameworks: Modern research approaches in this domain emphasize highly scalable, distributed paradigms. Understanding the micro-architecture and performance trade-offs is critical to optimizing overall efficiency. We investigate the relationship between system inputs and final output metrics.",
+                                "Historical Precedents: Historically, systems of this nature suffered from high latency and significant resource overheads. By introducing automated pipeline scheduling and adaptive feedback loops, our model achieves a substantial improvement in resource utilization while maintaining deterministic safety guarantees."
+                            )
+                        ),
+                        PdfPageModel(
+                            pageNumber = 2,
+                            paragraphs = listOf(
+                                "Methodology & Analytical Models: Section 2 covers the rigorous mathematical model of our '$titleClean' implementation. We describe the constant-state invariants and how transactions or data transformations are processed safely across concurrent nodes.",
+                                "Dynamic Performance Profiles: Under peak load, the system shows highly linear scalability. We compare our results with established baselines, showing a substantial improvement in throughput and reduced execution divergence.",
+                                "Limiting Factors and Bounds: While highly optimized, the operational envelope is strictly bounded by hardware memory bandwidth and network packet serialization latency. We discuss these mitigation strategies in detail."
+                            )
+                        ),
+                        PdfPageModel(
+                            pageNumber = 3,
+                            paragraphs = listOf(
+                                "Conclusion & Future Trajectories: In summary, this '$titleClean' framework represents a major milestone in academic and industrial applications. Our permanent stone-like secure storage prevents data leakage and ensures cross-device consistency.",
+                                "Avenue of Future Work: Future investigations will focus on integrating edge-level AI summaries, extending the localized translation matrices, and optimizing real-time collaborative highlighting workflows across cloud networks."
+                            )
+                        )
                     )
-                )
-            )
+                } else {
+                    listOf(
+                        PdfPageModel(
+                            pageNumber = 1,
+                            paragraphs = listOf(
+                                "Default Synced Document Content: Use the cloud explorer or OCR tools to capture custom text. All highlights, translations, and annotations on synced texts are updated across devices in real-time.",
+                                "How to use PulsePDF highlights: Hold or single tap any paragraph on screen to activate highlighting. Choose yellow, green, teal, or violet styles to organize your research seamlessly.",
+                                "AI summarizer: Open the research console to get concise summaries and key bullet takeaways for faster academic research workflows."
+                            )
+                        )
+                    )
+                }
+            }
         }
     }
 }

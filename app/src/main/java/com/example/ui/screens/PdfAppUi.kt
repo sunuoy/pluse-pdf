@@ -11,7 +11,10 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -19,11 +22,20 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -32,6 +44,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -40,13 +53,23 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import com.example.data.database.DocumentEntity
 import com.example.data.database.HighlightEntity
 import com.example.data.model.PdfDocumentLines
+import com.example.data.model.PdfPageModel
 import com.example.ui.viewmodel.ChatRole
 import com.example.ui.viewmodel.PdfViewModel
 import com.example.ui.viewmodel.SyncState
+import com.example.ui.viewmodel.ReaderTheme
+import com.example.ui.viewmodel.ViewMode
+import com.example.ui.viewmodel.PageStyle
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 
 enum class ScreenType {
     Dashboard, Reader, OCRScanner, SyncConsole
@@ -58,6 +81,46 @@ fun PulsePdfApp(viewModel: PdfViewModel) {
     val selectedDoc by viewModel.selectedDocument.collectAsStateWithLifecycle()
     var currentScreen by remember { mutableStateOf(ScreenType.Dashboard) }
 
+    val context = LocalContext.current
+
+    var showSettingsDialog by remember { mutableStateOf(false) }
+    var showTranslationDialog by remember { mutableStateOf(false) }
+
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val coroutineScope = rememberCoroutineScope()
+
+    val viewMode by viewModel.viewMode.collectAsStateWithLifecycle()
+    val readerTheme by viewModel.readerTheme.collectAsStateWithLifecycle()
+    val brightness by viewModel.brightness.collectAsStateWithLifecycle()
+    val pageStyle by viewModel.pageStyle.collectAsStateWithLifecycle()
+
+    val pdfPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            val contentResolver = context.contentResolver
+            var fileName = "imported_document.pdf"
+            var fileSize: Long = 1024 * 1024 // fallback 1MB
+
+            try {
+                contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    val sizeIndex = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE)
+                    if (cursor.moveToFirst()) {
+                        if (nameIndex != -1) fileName = cursor.getString(nameIndex)
+                        if (sizeIndex != -1) fileSize = cursor.getLong(sizeIndex)
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+
+            val titleClean = fileName.removeSuffix(".pdf").replace("_", " ").replace("-", " ")
+            viewModel.importLocalPdf(titleClean, fileName, fileSize, uri)
+            Toast.makeText(context, "Successfully parsed and imported $fileName!", Toast.LENGTH_LONG).show()
+        }
+    }
+
     // Auto-navigate to Reader when a document is selected
     LaunchedEffect(selectedDoc) {
         if (selectedDoc != null) {
@@ -67,100 +130,213 @@ fun PulsePdfApp(viewModel: PdfViewModel) {
         }
     }
 
-    Scaffold(
-        bottomBar = {
-            if (selectedDoc == null) {
-                NavigationBar(
-                    containerColor = Color(0xFFF3EDF7),
-                    contentColor = Color(0xFF1D1B20),
-                    modifier = Modifier.testTag("app_navigation_bar")
-                ) {
-                    NavigationBarItem(
-                        selected = currentScreen == ScreenType.Dashboard,
-                        onClick = { currentScreen = ScreenType.Dashboard },
-                        icon = { Icon(Icons.Default.Folder, contentDescription = "Dashboard") },
-                        label = { Text("Library") },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = Color(0xFF1D192B),
-                            selectedTextColor = Color(0xFF1D192B),
-                            unselectedIconColor = Color(0xFF49454F),
-                            unselectedTextColor = Color(0xFF49454F),
-                            indicatorColor = Color(0xFFE8DEF8)
-                        ),
-                        modifier = Modifier.testTag("nav_library_tab")
+    val onOpenMenu = {
+        coroutineScope.launch {
+            drawerState.open()
+        }
+    }
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        gesturesEnabled = selectedDoc == null,
+        drawerContent = {
+            ModalDrawerSheet(
+                drawerContainerColor = Color(0xFFFEF7FF)
+            ) {
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "Pulsar Research PDF",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = Color(0xFF6750A4),
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp)
+                )
+                Text(
+                    text = "System Navigation Menu",
+                    fontSize = 12.sp,
+                    color = Color(0xFF49454F),
+                    modifier = Modifier.padding(horizontal = 24.dp).padding(bottom = 16.dp)
+                )
+                HorizontalDivider(color = Color(0xFFE8DEF8))
+                Spacer(modifier = Modifier.height(12.dp))
+
+                NavigationDrawerItem(
+                    label = { Text("Settings", fontWeight = FontWeight.Bold, color = Color(0xFF1D1B20)) },
+                    selected = false,
+                    onClick = {
+                        coroutineScope.launch { drawerState.close() }
+                        showSettingsDialog = true
+                    },
+                    icon = { Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color(0xFF6750A4)) },
+                    modifier = Modifier.padding(horizontal = 12.dp).testTag("menu_settings_option")
+                )
+                
+                Spacer(modifier = Modifier.height(8.dp))
+
+                NavigationDrawerItem(
+                    label = { Text("Translation", fontWeight = FontWeight.Bold, color = Color(0xFF1D1B20)) },
+                    selected = false,
+                    onClick = {
+                        coroutineScope.launch { drawerState.close() }
+                        showTranslationDialog = true
+                    },
+                    icon = { Icon(Icons.Default.Translate, contentDescription = "Translation", tint = Color(0xFF6750A4)) },
+                    modifier = Modifier.padding(horizontal = 12.dp).testTag("menu_translation_option")
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                NavigationDrawerItem(
+                    label = { Text("Exit", fontWeight = FontWeight.Bold, color = Color(0xFF1D1B20)) },
+                    selected = false,
+                    onClick = {
+                        coroutineScope.launch { drawerState.close() }
+                        (context as? android.app.Activity)?.finish()
+                    },
+                    icon = { Icon(Icons.Default.ExitToApp, contentDescription = "Exit", tint = Color(0xFFEF4444)) },
+                    modifier = Modifier.padding(horizontal = 12.dp).testTag("menu_exit_option")
+                )
+            }
+        }
+    ) {
+        Scaffold(
+            floatingActionButton = {
+                if (selectedDoc == null && currentScreen == ScreenType.Dashboard) {
+                    ExtendedFloatingActionButton(
+                        text = { Text("Import PDF", fontWeight = FontWeight.Bold) },
+                        icon = { Icon(Icons.Default.Add, contentDescription = "Import local PDF") },
+                        onClick = {
+                            pdfPickerLauncher.launch("application/pdf")
+                        },
+                        containerColor = Color(0xFF6750A4),
+                        contentColor = Color.White,
+                        modifier = Modifier.testTag("import_pdf_fab")
                     )
-                    NavigationBarItem(
-                        selected = currentScreen == ScreenType.OCRScanner,
-                        onClick = { currentScreen = ScreenType.OCRScanner },
-                        icon = { Icon(Icons.Default.Camera, contentDescription = "OCR Scanner") },
-                        label = { Text("OCR Scanner") },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = Color(0xFF1D192B),
-                            selectedTextColor = Color(0xFF1D192B),
-                            unselectedIconColor = Color(0xFF49454F),
-                            unselectedTextColor = Color(0xFF49454F),
-                            indicatorColor = Color(0xFFE8DEF8)
-                        ),
-                        modifier = Modifier.testTag("nav_ocr_tab")
-                    )
-                    NavigationBarItem(
-                        selected = currentScreen == ScreenType.SyncConsole,
-                        onClick = { currentScreen = ScreenType.SyncConsole },
-                        icon = { Icon(Icons.Default.Sync, contentDescription = "Cloud Sync") },
-                        label = { Text("Cloud Sync") },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = Color(0xFF1D192B),
-                            selectedTextColor = Color(0xFF1D192B),
-                            unselectedIconColor = Color(0xFF49454F),
-                            unselectedTextColor = Color(0xFF49454F),
-                            indicatorColor = Color(0xFFE8DEF8)
-                        ),
-                        modifier = Modifier.testTag("nav_sync_tab")
-                    )
+                }
+            },
+            bottomBar = {
+                if (selectedDoc == null) {
+                    NavigationBar(
+                        containerColor = Color(0xFFF3EDF7),
+                        contentColor = Color(0xFF1D1B20),
+                        modifier = Modifier.testTag("app_navigation_bar")
+                    ) {
+                        NavigationBarItem(
+                            selected = currentScreen == ScreenType.Dashboard,
+                            onClick = { currentScreen = ScreenType.Dashboard },
+                            icon = { Icon(Icons.Default.Folder, contentDescription = "Dashboard") },
+                            label = { Text("Library") },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = Color(0xFF1D192B),
+                                selectedTextColor = Color(0xFF1D192B),
+                                unselectedIconColor = Color(0xFF49454F),
+                                unselectedTextColor = Color(0xFF49454F),
+                                indicatorColor = Color(0xFFE8DEF8)
+                            ),
+                            modifier = Modifier.testTag("nav_library_tab")
+                        )
+                        NavigationBarItem(
+                            selected = currentScreen == ScreenType.OCRScanner,
+                            onClick = { currentScreen = ScreenType.OCRScanner },
+                            icon = { Icon(Icons.Default.Camera, contentDescription = "OCR Scanner") },
+                            label = { Text("OCR Scanner") },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = Color(0xFF1D192B),
+                                selectedTextColor = Color(0xFF1D192B),
+                                unselectedIconColor = Color(0xFF49454F),
+                                unselectedTextColor = Color(0xFF49454F),
+                                indicatorColor = Color(0xFFE8DEF8)
+                            ),
+                            modifier = Modifier.testTag("nav_ocr_tab")
+                        )
+                        NavigationBarItem(
+                            selected = currentScreen == ScreenType.SyncConsole,
+                            onClick = { currentScreen = ScreenType.SyncConsole },
+                            icon = { Icon(Icons.Default.Sync, contentDescription = "Cloud Sync") },
+                            label = { Text("Cloud Sync") },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = Color(0xFF1D192B),
+                                selectedTextColor = Color(0xFF1D192B),
+                                unselectedIconColor = Color(0xFF49454F),
+                                unselectedTextColor = Color(0xFF49454F),
+                                indicatorColor = Color(0xFFE8DEF8)
+                            ),
+                            modifier = Modifier.testTag("nav_sync_tab")
+                        )
+                    }
+                }
+            }
+        ) { innerPadding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFFFEF7FF))
+                    .padding(innerPadding)
+            ) {
+                AnimatedContent(
+                    targetState = currentScreen,
+                    transitionSpec = {
+                        slideInVertically(
+                            animationSpec = spring(
+                                stiffness = Spring.StiffnessMediumLow,
+                                dampingRatio = Spring.DampingRatioMediumBouncy
+                            )
+                        ) { it } togetherWith slideOutVertically(
+                            animationSpec = spring(
+                                stiffness = Spring.StiffnessMediumLow
+                            )
+                        ) { -it }
+                    },
+                    label = "ScreenTransition"
+                ) { screen ->
+                    when (screen) {
+                        ScreenType.Dashboard -> DashboardScreen(
+                            viewModel = viewModel,
+                            onOpenOcr = { currentScreen = ScreenType.OCRScanner },
+                            onOpenSync = { currentScreen = ScreenType.SyncConsole },
+                            onOpenMenu = { onOpenMenu() },
+                            onPickPdf = { pdfPickerLauncher.launch("application/pdf") }
+                        )
+                        ScreenType.Reader -> ReaderScreen(
+                            viewModel = viewModel,
+                            onBack = {
+                                viewModel.closeDocument()
+                                currentScreen = ScreenType.Dashboard
+                            }
+                        )
+                        ScreenType.OCRScanner -> OcrScannerScreen(
+                            viewModel = viewModel,
+                            onOpenMenu = { onOpenMenu() }
+                        )
+                        ScreenType.SyncConsole -> SyncConsoleScreen(
+                            viewModel = viewModel,
+                            onOpenMenu = { onOpenMenu() }
+                        )
+                    }
                 }
             }
         }
-    ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color(0xFFFEF7FF))
-                .padding(innerPadding)
-        ) {
-            AnimatedContent(
-                targetState = currentScreen,
-                transitionSpec = {
-                    slideInVertically(
-                        animationSpec = spring(
-                            stiffness = Spring.StiffnessMediumLow,
-                            dampingRatio = Spring.DampingRatioMediumBouncy
-                        )
-                    ) { it } togetherWith slideOutVertically(
-                        animationSpec = spring(
-                            stiffness = Spring.StiffnessMediumLow
-                        )
-                    ) { -it }
-                },
-                label = "ScreenTransition"
-            ) { screen ->
-                when (screen) {
-                    ScreenType.Dashboard -> DashboardScreen(
-                        viewModel = viewModel,
-                        onOpenOcr = { currentScreen = ScreenType.OCRScanner },
-                        onOpenSync = { currentScreen = ScreenType.SyncConsole }
-                    )
-                    ScreenType.Reader -> ReaderScreen(
-                        viewModel = viewModel,
-                        onBack = {
-                            viewModel.closeDocument()
-                            currentScreen = ScreenType.Dashboard
-                        }
-                    )
-                    ScreenType.OCRScanner -> OcrScannerScreen(viewModel = viewModel)
-                    ScreenType.SyncConsole -> SyncConsoleScreen(viewModel = viewModel)
-                }
-            }
-        }
+    }
+
+    if (showSettingsDialog) {
+        ViewSettingsDialog(
+            currentViewMode = viewMode,
+            currentTheme = readerTheme,
+            currentBrightness = brightness,
+            currentPageStyle = pageStyle,
+            onViewModeChange = { viewModel.setViewMode(it) },
+            onThemeChange = { viewModel.setReaderTheme(it) },
+            onBrightnessChange = { viewModel.setBrightness(it) },
+            onPageStyleChange = { viewModel.setPageStyle(it) },
+            onDismiss = { showSettingsDialog = false }
+        )
+    }
+
+    if (showTranslationDialog) {
+        MainMenuTranslationDialog(
+            viewModel = viewModel,
+            onDismiss = { showTranslationDialog = false }
+        )
     }
 }
 
@@ -168,7 +344,9 @@ fun PulsePdfApp(viewModel: PdfViewModel) {
 fun DashboardScreen(
     viewModel: PdfViewModel,
     onOpenOcr: () -> Unit,
-    onOpenSync: () -> Unit
+    onOpenSync: () -> Unit,
+    onOpenMenu: () -> Unit,
+    onPickPdf: () -> Unit
 ) {
     val docs by viewModel.documents.collectAsStateWithLifecycle()
     val syncState by viewModel.syncingState.collectAsStateWithLifecycle()
@@ -184,13 +362,24 @@ fun DashboardScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(bottom = 20.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
+            IconButton(
+                onClick = onOpenMenu,
+                modifier = Modifier.testTag("dashboard_menu_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Menu,
+                    contentDescription = "Open Navigation Menu",
+                    tint = Color(0xFF6750A4),
+                    modifier = Modifier.size(28.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "PULSE PDF",
-                    fontSize = 32.sp,
+                    fontSize = 26.sp,
                     fontWeight = FontWeight.ExtraBold,
                     fontFamily = FontFamily.SansSerif,
                     letterSpacing = 1.sp,
@@ -198,7 +387,7 @@ fun DashboardScreen(
                 )
                 Text(
                     text = "Research Engine & Cloud Sync",
-                    fontSize = 14.sp,
+                    fontSize = 12.sp,
                     color = Color(0xFF6750A4),
                     fontWeight = FontWeight.Bold
                 )
@@ -276,6 +465,83 @@ fun DashboardScreen(
                     Column {
                         Text("Cloud Sync", color = Color(0xFF1D1B20), fontWeight = FontWeight.Bold, fontSize = 14.sp)
                         Text("4 Devices linked", color = Color(0xFF49454F), fontSize = 11.sp)
+                    }
+                }
+            }
+        }
+
+        // Modern File Input Drop-Zone Card using the File API
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 24.dp)
+                .testTag("local_file_input_zone")
+                .clickable { onPickPdf() },
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = Color(0xFFF3EDF7)
+            ),
+            border = BorderStroke(2.dp, Color(0xFF6750A4).copy(alpha = 0.4f))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(60.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFFEADDFF)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CloudUpload,
+                        contentDescription = "Upload Document",
+                        tint = Color(0xFF21005D),
+                        modifier = Modifier.size(32.dp)
+                    )
+                }
+                
+                Text(
+                    text = "Load Local PDF Document",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF1D1B20)
+                )
+                
+                Text(
+                    text = "Tap to browse and select a PDF file from your device storage to load it into application state.",
+                    fontSize = 12.sp,
+                    color = Color(0xFF49454F),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 12.dp)
+                )
+
+                // Added visual badge for parsing mechanism
+                Surface(
+                    color = Color(0xFF6750A4).copy(alpha = 0.08f),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFF00E5FF))
+                        )
+                        Text(
+                            text = "Parses stream with native decompressor",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF6750A4)
+                        )
                     }
                 }
             }
@@ -435,276 +701,1486 @@ fun ReaderScreen(
     viewModel: PdfViewModel,
     onBack: () -> Unit
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val document by viewModel.selectedDocument.collectAsStateWithLifecycle()
     val activePage by viewModel.currentPage.collectAsStateWithLifecycle()
     val allHighlights by viewModel.highlights.collectAsStateWithLifecycle()
 
     val currentDoc = document ?: return
-    val pages = remember(currentDoc) { PdfDocumentLines.getPagesForDocument(currentDoc.sourcePath) }
-    val pageContent = pages.find { it.pageNumber == activePage } ?: pages.first()
+    val documentPages by viewModel.documentPages.collectAsStateWithLifecycle()
+    val viewMode by viewModel.viewMode.collectAsStateWithLifecycle()
+    val readerTheme by viewModel.readerTheme.collectAsStateWithLifecycle()
+    val brightness by viewModel.brightness.collectAsStateWithLifecycle()
+    val isRealTimeTranslationEnabled by viewModel.isRealTimeTranslationEnabled.collectAsStateWithLifecycle()
+    val pageStyle by viewModel.pageStyle.collectAsStateWithLifecycle()
+    val pageRotations by viewModel.pageRotations.collectAsStateWithLifecycle()
+
+    val pageContent = documentPages.find { it.pageNumber == activePage }
+        ?: documentPages.firstOrNull()
+        ?: PdfPageModel(1, listOf("No page content available."))
+
+    val rotationAngle = pageRotations[activePage] ?: 0f
 
     val pageHighlights = remember(allHighlights, activePage) {
         allHighlights.filter { it.documentId == currentDoc.id && it.pageNumber == activePage }
     }
 
     var selectedSentenceText by remember { mutableStateOf("") }
+    val clipboardManager = LocalClipboardManager.current
+    var tts by remember { mutableStateOf<android.speech.tts.TextToSpeech?>(null) }
+    DisposableEffect(context) {
+        val ttsInstance = android.speech.tts.TextToSpeech(context) { _ -> }
+        tts = ttsInstance
+        onDispose {
+            ttsInstance.stop()
+            ttsInstance.shutdown()
+        }
+    }
+
+    val translationResult by viewModel.translationResult.collectAsStateWithLifecycle()
+    val translationLoading by viewModel.translationLoading.collectAsStateWithLifecycle()
+    var activePopupLanguage by remember { mutableStateOf("Spanish") }
+    val languages = listOf("English", "Spanish", "French", "Japanese", "German", "Hindi", "Arabic", "Telugu")
+
+    LaunchedEffect(selectedSentenceText, activePopupLanguage, isRealTimeTranslationEnabled) {
+        if (selectedSentenceText.isNotEmpty() && isRealTimeTranslationEnabled) {
+            viewModel.textSelectedRange = selectedSentenceText
+            viewModel.translateSelectedText(activePopupLanguage)
+        }
+    }
     var showTranslatorPane by remember { mutableStateOf(false) }
     var showResearchDrawer by remember { mutableStateOf(false) }
     var isAreaOcrModeActive by remember { mutableStateOf(false) }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xFFFEF7FF))
-    ) {
-        // App bar
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color(0xFFF3EDF7))
-                .padding(horizontal = 8.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(
-                onClick = onBack,
-                modifier = Modifier.testTag("reader_back_button")
-            ) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color(0xFF1D1B20))
-            }
+    var showDocMenu by remember { mutableStateOf(false) }
+    var showViewSettingsSheet by remember { mutableStateOf(false) }
+    var showOrganizePagesMode by remember { mutableStateOf(false) }
+    var showGoToPageDialog by remember { mutableStateOf(false) }
 
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 8.dp)
-            ) {
-                Text(
-                    text = currentDoc.title,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFF1D1B20),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = "Page $activePage of ${currentDoc.totalPages}",
-                    fontSize = 11.sp,
-                    color = Color(0xFF6750A4)
-                )
-            }
+    val scrollState = rememberScrollState()
+    val coroutineScope = rememberCoroutineScope()
+    var showFloatingPageIndicator by remember { mutableStateOf(false) }
 
-            // Area OCR Select Tool Toggle (Crop Icon)
-            IconButton(
-                onClick = { isAreaOcrModeActive = !isAreaOcrModeActive },
-                modifier = Modifier.testTag("area_ocr_crop_toggle")
-            ) {
-                Icon(
-                    imageVector = if (isAreaOcrModeActive) Icons.Default.Close else Icons.Default.Crop,
-                    contentDescription = "Area OCR Selector",
-                    tint = if (isAreaOcrModeActive) Color(0xFF842029) else Color(0xFF6750A4)
-                )
-            }
+    // Reset scroll offset to top when page changes
+    LaunchedEffect(activePage) {
+        scrollState.scrollTo(0)
+    }
 
-            // Sync Badge and Research Engine Drawer Toggle
-            IconButton(onClick = { showResearchDrawer = !showResearchDrawer }) {
-                Icon(
-                    imageVector = Icons.Default.AutoAwesome,
-                    contentDescription = "Research Engine",
-                    tint = Color(0xFF6750A4)
-                )
+    // Floating indicator fades in when scrolling/swiping up/down
+    LaunchedEffect(scrollState.isScrollInProgress) {
+        if (scrollState.isScrollInProgress) {
+            showFloatingPageIndicator = true
+        } else {
+            delay(1500)
+            showFloatingPageIndicator = false
+        }
+    }
+
+    // Custom NestedScrollConnection to detect swiping past page bounds
+    val nestedScrollConnection = remember(activePage, currentDoc.totalPages, viewMode) {
+        object : NestedScrollConnection {
+            override fun onPostScroll(
+                consumed: Offset,
+                available: Offset,
+                source: NestedScrollSource
+            ): Offset {
+                if (viewMode == ViewMode.Horizontal) {
+                    // Swiped left at the right edge (available.x is negative overscroll)
+                    if (available.x < -30f) {
+                        if (activePage < currentDoc.totalPages) {
+                            viewModel.changePage(activePage + 1)
+                        }
+                    }
+                    // Swiped right at the left edge (available.x is positive overscroll)
+                    if (available.x > 30f) {
+                        if (activePage > 1) {
+                            viewModel.changePage(activePage - 1)
+                        }
+                    }
+                } else {
+                    // Swiped up at the bottom of the page (available.y is negative overscroll)
+                    if (available.y < -30f) {
+                        if (activePage < currentDoc.totalPages) {
+                            viewModel.changePage(activePage + 1)
+                        }
+                    }
+                    // Swiped down at the top of the page (available.y is positive overscroll)
+                    if (available.y > 30f) {
+                        if (activePage > 1) {
+                            viewModel.changePage(activePage - 1)
+                        }
+                    }
+                }
+                return super.onPostScroll(consumed, available, source)
             }
         }
+    }
 
-        Box(
+    val themeBgColor = when (readerTheme) {
+        ReaderTheme.Dark -> Color(0xFF121212)
+        ReaderTheme.Green -> Color(0xFFC8E6C9)
+        ReaderTheme.Sepia -> Color(0xFFF4ECD8)
+        else -> Color(0xFFFEF7FF)
+    }
+
+    val themeAppBarColor = when (readerTheme) {
+        ReaderTheme.Dark -> Color(0xFF1E1E1E)
+        ReaderTheme.Green -> Color(0xFFA5D6A7)
+        ReaderTheme.Sepia -> Color(0xFFEFE8D4)
+        else -> Color(0xFFF3EDF7)
+    }
+
+    val themeTextColor = when (readerTheme) {
+        ReaderTheme.Dark -> Color.White
+        ReaderTheme.Green -> Color(0xFF1B5E20)
+        ReaderTheme.Sepia -> Color(0xFF4E342E)
+        else -> Color(0xFF1D1B20)
+    }
+
+    val themeSubTextColor = when (readerTheme) {
+        ReaderTheme.Dark -> Color.LightGray
+        ReaderTheme.Green -> Color(0xFF2E7D32)
+        ReaderTheme.Sepia -> Color(0xFF5D4037)
+        else -> Color(0xFF6750A4)
+    }
+
+    val cardBgColor = when (readerTheme) {
+        ReaderTheme.Dark -> Color(0xFF1E1E1E)
+        ReaderTheme.Green -> Color(0xFFE8F5E9)
+        ReaderTheme.Sepia -> Color(0xFFFDF5E6)
+        else -> Color.White
+    }
+
+    val paragraphTextColor = when (readerTheme) {
+        ReaderTheme.Dark -> Color(0xFFECEFF1)
+        ReaderTheme.Green -> Color(0xFF1B5E20)
+        ReaderTheme.Sepia -> Color(0xFF4E342E)
+        else -> Color(0xFF1E293B)
+    }
+
+    if (showOrganizePagesMode) {
+        OrganizePagesView(
+            viewModel = viewModel,
+            currentDoc = currentDoc,
+            documentPages = documentPages,
+            pageRotations = pageRotations,
+            onDismiss = { showOrganizePagesMode = false }
+        )
+    } else {
+        Column(
             modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
+                .fillMaxSize()
+                .background(themeBgColor)
         ) {
-            if (isAreaOcrModeActive) {
-                AreaOcrSelectorView(
-                    viewModel = viewModel,
-                    pageContent = pageContent,
-                    onClose = { isAreaOcrModeActive = false }
-                )
-            } else {
-                // Main Rendered PDF Page View
-                Column(
+            // App bar
+            Row(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(18.dp)
+                    .fillMaxWidth()
+                    .background(themeAppBarColor)
+                    .padding(horizontal = 8.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                // PDF Sheet replica style card
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .wrapContentHeight(),
-                    shape = RoundedCornerShape(12.dp),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 12.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color.White)
+                IconButton(
+                    onClick = onBack,
+                    modifier = Modifier.testTag("reader_back_button")
                 ) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = themeTextColor)
+                }
+
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 8.dp)
+                ) {
+                    Text(
+                        text = currentDoc.title,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = themeTextColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = "Page $activePage of ${currentDoc.totalPages}",
+                        fontSize = 11.sp,
+                        color = themeSubTextColor
+                    )
+                }
+
+                // Area OCR Select Tool Toggle (Crop Icon)
+                IconButton(
+                    onClick = { isAreaOcrModeActive = !isAreaOcrModeActive },
+                    modifier = Modifier.testTag("area_ocr_crop_toggle")
+                ) {
+                    Icon(
+                        imageVector = if (isAreaOcrModeActive) Icons.Default.Close else Icons.Default.Crop,
+                        contentDescription = "Area OCR Selector",
+                        tint = if (isAreaOcrModeActive) Color(0xFF842029) else themeSubTextColor
+                    )
+                }
+
+                // Sync Badge and Research Engine Drawer Toggle
+                IconButton(onClick = { showResearchDrawer = !showResearchDrawer }) {
+                    Icon(
+                        imageVector = Icons.Default.AutoAwesome,
+                        contentDescription = "Research Engine",
+                        tint = themeSubTextColor
+                    )
+                }
+
+                // More Menu Button (Screenshot 1 & 2)
+                IconButton(
+                    onClick = { showDocMenu = true },
+                    modifier = Modifier.testTag("reader_more_options_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "Options",
+                        tint = themeSubTextColor
+                    )
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            ) {
+                if (isAreaOcrModeActive) {
+                    AreaOcrSelectorView(
+                        viewModel = viewModel,
+                        pageContent = pageContent,
+                        onClose = { isAreaOcrModeActive = false }
+                    )
+                } else {
+                    // Main Rendered PDF Page View
                     Column(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(24.dp)
+                            .fillMaxSize()
+                            .nestedScroll(nestedScrollConnection)
+                            .verticalScroll(scrollState)
+                            .padding(if (pageStyle == PageStyle.Reflow) 12.dp else 18.dp)
                     ) {
-                        // Header metadata replica
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(bottom = 16.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                "PULSE DIGITAL READER v2.4",
-                                color = Color.Gray,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                "PAGE 0$activePage",
-                                color = Color.Gray,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
+                        val maxColumnWidth = if (pageStyle == PageStyle.Adaptive) 540.dp else androidx.compose.ui.unit.Dp.Unspecified
+                        val densityPadding = if (pageStyle == PageStyle.Adaptive) 28.dp else 24.dp
+                        val densityFontSize = if (pageStyle == PageStyle.Adaptive) 16.sp else if (pageStyle == PageStyle.Reflow) 17.sp else 15.sp
+                        val densityLineHeight = if (pageStyle == PageStyle.Adaptive) 24.sp else if (pageStyle == PageStyle.Reflow) 26.sp else 22.sp
 
-                        HorizontalDivider(color = Color.LightGray, modifier = Modifier.padding(bottom = 18.dp))
+                        if (pageStyle == PageStyle.Reflow) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 4.dp)
+                            ) {
+                                pageContent.paragraphs.forEachIndexed { index, paragraphText ->
+                                    val isSelected = selectedSentenceText == paragraphText
+                                    val itemHighlight = pageHighlights.find { it.textHighlighted == paragraphText }
 
-                        // Rendered paragraphs containing text lines
-                        pageContent.paragraphs.forEachIndexed { index, paragraphText ->
-                            val isSelected = selectedSentenceText == paragraphText
-                            // Check if this paragraph is already highlighted in database
-                            val itemHighlight = pageHighlights.find { it.textHighlighted == paragraphText }
+                                    val bounceScale by animateFloatAsState(
+                                        targetValue = if (isSelected) 1.025f else if (itemHighlight != null) 1.01f else 1.00f,
+                                        animationSpec = spring(
+                                            dampingRatio = Spring.DampingRatioHighBouncy,
+                                            stiffness = Spring.StiffnessMediumLow
+                                        ),
+                                        label = "reflowBounceScale"
+                                    )
 
+                                    val bounceTranslationY by animateFloatAsState(
+                                        targetValue = if (isSelected) -3f else 0f,
+                                        animationSpec = spring(
+                                            dampingRatio = Spring.DampingRatioHighBouncy,
+                                            stiffness = Spring.StiffnessMedium
+                                        ),
+                                        label = "reflowBounceTranslationY"
+                                    )
+
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .graphicsLayer(
+                                                scaleX = bounceScale,
+                                                scaleY = bounceScale,
+                                                translationY = bounceTranslationY
+                                            )
+                                            .animateContentSize()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(
+                                                when {
+                                                    itemHighlight != null -> Color(android.graphics.Color.parseColor(itemHighlight.colorHex)).copy(alpha = 0.35f)
+                                                    isSelected -> Color(0xFFEADDFF)
+                                                    else -> Color.Transparent
+                                                }
+                                            )
+                                            .clickable {
+                                                selectedSentenceText = if (isSelected) "" else paragraphText
+                                                viewModel.textSelectedRange = selectedSentenceText
+                                            }
+                                            .padding(vertical = 12.dp, horizontal = 8.dp)
+                                    ) {
+                                        Text(
+                                            text = paragraphText,
+                                            color = paragraphTextColor,
+                                            fontSize = densityFontSize,
+                                            lineHeight = densityLineHeight,
+                                            fontFamily = FontFamily.Serif
+                                        )
+
+                                        if (isSelected && isRealTimeTranslationEnabled) {
+                                            Popup(
+                                                alignment = Alignment.BottomCenter,
+                                                offset = IntOffset(0, 10),
+                                                properties = PopupProperties(
+                                                    focusable = false,
+                                                    dismissOnClickOutside = true,
+                                                    dismissOnBackPress = true
+                                                )
+                                            ) {
+                                                Card(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth(0.95f)
+                                                        .shadow(16.dp, RoundedCornerShape(16.dp))
+                                                        .testTag("popup_translation_bubble"),
+                                                    shape = RoundedCornerShape(16.dp),
+                                                    colors = CardDefaults.cardColors(
+                                                        containerColor = when (readerTheme) {
+                                                            ReaderTheme.Dark -> Color(0xFF1E1E1E)
+                                                            ReaderTheme.Sepia -> Color(0xFFF4ECD8)
+                                                            ReaderTheme.Green -> Color(0xFFE8F5E9)
+                                                            else -> Color(0xFFF7F2FA)
+                                                        }
+                                                    ),
+                                                    border = BorderStroke(
+                                                        1.dp,
+                                                        when (readerTheme) {
+                                                            ReaderTheme.Dark -> Color.DarkGray
+                                                            else -> Color(0xFFEADBFF)
+                                                        }
+                                                    )
+                                                ) {
+                                                    Column(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .padding(14.dp),
+                                                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                                                    ) {
+                                                        Row(
+                                                            modifier = Modifier.fillMaxWidth(),
+                                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            Row(
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                            ) {
+                                                                Icon(
+                                                                    imageVector = Icons.Default.Translate,
+                                                                    contentDescription = "Translate",
+                                                                    tint = when (readerTheme) {
+                                                                        ReaderTheme.Dark -> Color(0xFF00E5FF)
+                                                                        else -> Color(0xFF6750A4)
+                                                                    },
+                                                                    modifier = Modifier.size(16.dp)
+                                                                )
+                                                                Text(
+                                                                    text = "REAL-TIME TRANSLATION",
+                                                                    fontSize = 11.sp,
+                                                                    fontWeight = FontWeight.Bold,
+                                                                    letterSpacing = 1.sp,
+                                                                    color = when (readerTheme) {
+                                                                        ReaderTheme.Dark -> Color(0xFF00E5FF)
+                                                                        else -> Color(0xFF6750A4)
+                                                                    }
+                                                                )
+                                                            }
+
+                                                            IconButton(
+                                                                onClick = { selectedSentenceText = "" },
+                                                                modifier = Modifier.size(24.dp).testTag("popup_close_button")
+                                                            ) {
+                                                                Icon(
+                                                                    imageVector = Icons.Default.Close,
+                                                                    contentDescription = "Close",
+                                                                    tint = Color.Gray,
+                                                                    modifier = Modifier.size(16.dp)
+                                                                )
+                                                            }
+                                                        }
+
+                                                        LazyRow(
+                                                            modifier = Modifier.fillMaxWidth(),
+                                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            items(languages) { lang ->
+                                                                val isLangSelected = activePopupLanguage == lang
+                                                                Box(
+                                                                    modifier = Modifier
+                                                                        .clip(RoundedCornerShape(12.dp))
+                                                                        .background(
+                                                                            if (isLangSelected) {
+                                                                                when (readerTheme) {
+                                                                                    ReaderTheme.Dark -> Color(0xFF00E5FF).copy(alpha = 0.25f)
+                                                                                    else -> Color(0xFFEADDFF)
+                                                                                }
+                                                                            } else {
+                                                                                when (readerTheme) {
+                                                                                    ReaderTheme.Dark -> Color.White.copy(alpha = 0.1f)
+                                                                                    else -> Color(0xFFE7E0EC)
+                                                                                }
+                                                                            }
+                                                                        )
+                                                                        .clickable { activePopupLanguage = lang }
+                                                                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                                                                        .testTag("popup_lang_chip_$lang")
+                                                                ) {
+                                                                    Text(
+                                                                        text = lang,
+                                                                        fontSize = 10.sp,
+                                                                        fontWeight = if (isLangSelected) FontWeight.Bold else FontWeight.Medium,
+                                                                        color = if (isLangSelected) {
+                                                                            when (readerTheme) {
+                                                                                ReaderTheme.Dark -> Color(0xFF00E5FF)
+                                                                                else -> Color(0xFF21005D)
+                                                                            }
+                                                                        } else {
+                                                                            when (readerTheme) {
+                                                                                ReaderTheme.Dark -> Color.LightGray
+                                                                                else -> Color(0xFF49454F)
+                                                                            }
+                                                                        }
+                                                                    )
+                                                                }
+                                                            }
+                                                        }
+
+                                                        HorizontalDivider(
+                                                            color = when (readerTheme) {
+                                                                ReaderTheme.Dark -> Color.White.copy(alpha = 0.1f)
+                                                                else -> Color(0xFFEADBFF)
+                                                            },
+                                                            thickness = 1.dp
+                                                        )
+
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .clip(RoundedCornerShape(8.dp))
+                                                                .background(
+                                                                    when (readerTheme) {
+                                                                        ReaderTheme.Dark -> Color.Black.copy(alpha = 0.2f)
+                                                                        else -> Color(0xFFFEF7FF)
+                                                                    }
+                                                                )
+                                                                .padding(10.dp)
+                                                        ) {
+                                                            if (translationLoading) {
+                                                                Row(
+                                                                    modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                                                                    horizontalArrangement = Arrangement.Center,
+                                                                    verticalAlignment = Alignment.CenterVertically
+                                                                ) {
+                                                                    CircularProgressIndicator(
+                                                                        modifier = Modifier.size(16.dp),
+                                                                        color = when (readerTheme) {
+                                                                            ReaderTheme.Dark -> Color(0xFF00E5FF)
+                                                                            else -> Color(0xFF6750A4)
+                                                                        },
+                                                                        strokeWidth = 2.dp
+                                                                    )
+                                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                                    Text(
+                                                                        "Translating to $activePopupLanguage...",
+                                                                        fontSize = 11.sp,
+                                                                        color = Color.Gray,
+                                                                        fontStyle = FontStyle.Italic
+                                                                    )
+                                                                }
+                                                            } else {
+                                                                Text(
+                                                                    text = translationResult.ifEmpty { "Waiting for text..." },
+                                                                    fontSize = 13.sp,
+                                                                    lineHeight = 18.sp,
+                                                                    color = when (readerTheme) {
+                                                                        ReaderTheme.Dark -> Color.White
+                                                                        ReaderTheme.Sepia -> Color(0xFF4E342E)
+                                                                        ReaderTheme.Green -> Color(0xFF1B5E20)
+                                                                        else -> Color(0xFF1D1B20)
+                                                                    },
+                                                                    fontFamily = FontFamily.SansSerif
+                                                                )
+                                                            }
+                                                        }
+
+                                                        Row(
+                                                            modifier = Modifier.fillMaxWidth(),
+                                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            Row(
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                            ) {
+                                                                val highlightColors = listOf(
+                                                                    "#FFEB3B", // Neon Yellow
+                                                                    "#00E5FF", // Cyan Light
+                                                                    "#10B981", // Emerald Green
+                                                                    "#EC4899"  // Hot Pink
+                                                                )
+                                                                val hasHighlight = pageHighlights.any { it.textHighlighted == paragraphText }
+
+                                                                if (!hasHighlight) {
+                                                                    highlightColors.forEach { color ->
+                                                                        val javaColor = android.graphics.Color.parseColor(color)
+                                                                        Box(
+                                                                            modifier = Modifier
+                                                                                .size(24.dp)
+                                                                                .clip(CircleShape)
+                                                                                .background(Color(javaColor))
+                                                                                .border(1.dp, Color.White, CircleShape)
+                                                                                .clickable {
+                                                                                    viewModel.addHighlight(color)
+                                                                                    selectedSentenceText = ""
+                                                                                }
+                                                                                .testTag("popup_hl_color_$color")
+                                                                        )
+                                                                    }
+                                                                } else {
+                                                                    IconButton(
+                                                                        onClick = {
+                                                                            val hl = pageHighlights.find { it.textHighlighted == paragraphText }
+                                                                            if (hl != null) viewModel.removeHighlight(hl)
+                                                                            selectedSentenceText = ""
+                                                                        },
+                                                                        modifier = Modifier.size(32.dp).testTag("popup_clear_hl")
+                                                                    ) {
+                                                                        Icon(
+                                                                            imageVector = Icons.Default.DeleteSweep,
+                                                                            contentDescription = "Clear Highlight",
+                                                                            tint = Color(0xFFEF4444),
+                                                                            modifier = Modifier.size(20.dp)
+                                                                        )
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            Row(
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                            ) {
+                                                                IconButton(
+                                                                    onClick = {
+                                                                        if (translationResult.isNotEmpty() && !translationLoading) {
+                                                                            try {
+                                                                                tts?.speak(translationResult, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, null)
+                                                                            } catch (e: Exception) {
+                                                                                Toast.makeText(context, "TTS failed: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+                                                                            }
+                                                                        }
+                                                                    },
+                                                                    modifier = Modifier.size(32.dp).testTag("popup_tts_button"),
+                                                                    enabled = translationResult.isNotEmpty() && !translationLoading
+                                                                ) {
+                                                                    Icon(
+                                                                        imageVector = Icons.Default.VolumeUp,
+                                                                        contentDescription = "Speak translation",
+                                                                        tint = when (readerTheme) {
+                                                                            ReaderTheme.Dark -> Color(0xFF00E5FF)
+                                                                            else -> Color(0xFF6750A4)
+                                                                        },
+                                                                        modifier = Modifier.size(20.dp)
+                                                                    )
+                                                                }
+
+                                                                IconButton(
+                                                                    onClick = {
+                                                                        if (translationResult.isNotEmpty()) {
+                                                                            clipboardManager.setText(AnnotatedString(translationResult))
+                                                                            Toast.makeText(context, "Translation copied to clipboard!", Toast.LENGTH_SHORT).show()
+                                                                        }
+                                                                    },
+                                                                    modifier = Modifier.size(32.dp).testTag("popup_copy_button"),
+                                                                    enabled = translationResult.isNotEmpty()
+                                                                ) {
+                                                                    Icon(
+                                                                        imageVector = Icons.Default.ContentCopy,
+                                                                        contentDescription = "Copy to clipboard",
+                                                                        tint = when (readerTheme) {
+                                                                            ReaderTheme.Dark -> Color(0xFF00E5FF)
+                                                                            else -> Color(0xFF6750A4)
+                                                                        },
+                                                                        modifier = Modifier.size(20.dp)
+                                                                    )
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .animateContentSize()
-                                    .clip(RoundedCornerShape(4.dp))
-                                    .background(
-                                        when {
-                                            itemHighlight != null -> Color(android.graphics.Color.parseColor(itemHighlight.colorHex)).copy(alpha = 0.35f)
-                                            isSelected -> Color(0xFFEADDFF)
-                                            else -> Color.Transparent
-                                        }
-                                    )
-                                    .clickable {
-                                        selectedSentenceText = if (isSelected) "" else paragraphText
-                                        viewModel.textSelectedRange = selectedSentenceText
-                                    }
-                                    .padding(vertical = 10.dp, horizontal = 6.dp)
+                                    .wrapContentHeight(),
+                                contentAlignment = Alignment.TopCenter
                             ) {
+                                // PDF Sheet replica style card (Adaptive-Width & Adaptive-Padding configured)
+                                Card(
+                                    modifier = Modifier
+                                        .widthIn(max = maxColumnWidth)
+                                        .fillMaxWidth()
+                                        .wrapContentHeight()
+                                        .rotate(rotationAngle),
+                                    shape = RoundedCornerShape(12.dp),
+                                    elevation = CardDefaults.cardElevation(defaultElevation = 12.dp),
+                                    colors = CardDefaults.cardColors(containerColor = cardBgColor)
+                                ) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(densityPadding)
+                                    ) {
+                                        // Header metadata replica
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(bottom = 16.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                "PULSE DIGITAL READER v2.4",
+                                                color = if (readerTheme == ReaderTheme.Dark) Color.Gray else Color.LightGray,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Text(
+                                                "PAGE 0$activePage",
+                                                color = if (readerTheme == ReaderTheme.Dark) Color.Gray else Color.LightGray,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+
+                                        HorizontalDivider(color = Color.LightGray.copy(alpha = 0.5f), modifier = Modifier.padding(bottom = 18.dp))
+
+                                        // Rendered paragraphs containing text lines
+                                        pageContent.paragraphs.forEachIndexed { index, paragraphText ->
+                                    val isSelected = selectedSentenceText == paragraphText
+                                    val itemHighlight = pageHighlights.find { it.textHighlighted == paragraphText }
+
+                                    // Bouncy spring-physics based scale and translation animations
+                                    val bounceScale by animateFloatAsState(
+                                        targetValue = if (isSelected) 1.025f else if (itemHighlight != null) 1.01f else 1.00f,
+                                        animationSpec = spring(
+                                            dampingRatio = Spring.DampingRatioHighBouncy,
+                                            stiffness = Spring.StiffnessMediumLow
+                                        ),
+                                        label = "bouncyScale"
+                                    )
+
+                                    val bounceTranslationY by animateFloatAsState(
+                                        targetValue = if (isSelected) -3f else 0f,
+                                        animationSpec = spring(
+                                            dampingRatio = Spring.DampingRatioHighBouncy,
+                                            stiffness = Spring.StiffnessMedium
+                                        ),
+                                        label = "bouncyTranslationY"
+                                    )
+
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .graphicsLayer(
+                                                scaleX = bounceScale,
+                                                scaleY = bounceScale,
+                                                translationY = bounceTranslationY
+                                            )
+                                            .animateContentSize()
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(
+                                                when {
+                                                    itemHighlight != null -> Color(android.graphics.Color.parseColor(itemHighlight.colorHex)).copy(alpha = 0.35f)
+                                                    isSelected -> Color(0xFFEADDFF)
+                                                    else -> Color.Transparent
+                                                }
+                                            )
+                                            .clickable {
+                                                selectedSentenceText = if (isSelected) "" else paragraphText
+                                                viewModel.textSelectedRange = selectedSentenceText
+                                            }
+                                            .padding(vertical = 10.dp, horizontal = 6.dp)
+                                    ) {
+                                        Text(
+                                            text = paragraphText,
+                                            color = paragraphTextColor,
+                                            fontSize = 15.sp,
+                                            lineHeight = 22.sp,
+                                            fontFamily = FontFamily.Serif
+                                        )
+
+                                        if (isSelected && isRealTimeTranslationEnabled) {
+                                            Popup(
+                                                alignment = Alignment.BottomCenter,
+                                                offset = IntOffset(0, 10),
+                                                properties = PopupProperties(
+                                                    focusable = false,
+                                                    dismissOnClickOutside = true,
+                                                    dismissOnBackPress = true
+                                                )
+                                            ) {
+                                                Card(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth(0.95f)
+                                                        .shadow(16.dp, RoundedCornerShape(16.dp))
+                                                        .testTag("popup_translation_bubble"),
+                                                    shape = RoundedCornerShape(16.dp),
+                                                    colors = CardDefaults.cardColors(
+                                                        containerColor = when (readerTheme) {
+                                                            ReaderTheme.Dark -> Color(0xFF1E1E1E)
+                                                            ReaderTheme.Sepia -> Color(0xFFF4ECD8)
+                                                            ReaderTheme.Green -> Color(0xFFE8F5E9)
+                                                            else -> Color(0xFFF7F2FA)
+                                                        }
+                                                    ),
+                                                    border = BorderStroke(
+                                                        1.dp,
+                                                        when (readerTheme) {
+                                                            ReaderTheme.Dark -> Color.DarkGray
+                                                            else -> Color(0xFFEADBFF)
+                                                        }
+                                                    )
+                                                ) {
+                                                    Column(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .padding(14.dp),
+                                                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                                                    ) {
+                                                        Row(
+                                                            modifier = Modifier.fillMaxWidth(),
+                                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            Row(
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                            ) {
+                                                                Icon(
+                                                                    imageVector = Icons.Default.Translate,
+                                                                    contentDescription = "Translate",
+                                                                    tint = when (readerTheme) {
+                                                                        ReaderTheme.Dark -> Color(0xFF00E5FF)
+                                                                        else -> Color(0xFF6750A4)
+                                                                    },
+                                                                    modifier = Modifier.size(16.dp)
+                                                                )
+                                                                Text(
+                                                                    text = "REAL-TIME TRANSLATION",
+                                                                    fontSize = 11.sp,
+                                                                    fontWeight = FontWeight.Bold,
+                                                                    letterSpacing = 1.sp,
+                                                                    color = when (readerTheme) {
+                                                                        ReaderTheme.Dark -> Color(0xFF00E5FF)
+                                                                        else -> Color(0xFF6750A4)
+                                                                    }
+                                                                )
+                                                            }
+
+                                                            IconButton(
+                                                                onClick = { selectedSentenceText = "" },
+                                                                modifier = Modifier.size(24.dp).testTag("popup_close_button")
+                                                            ) {
+                                                                Icon(
+                                                                    imageVector = Icons.Default.Close,
+                                                                    contentDescription = "Close",
+                                                                    tint = Color.Gray,
+                                                                    modifier = Modifier.size(16.dp)
+                                                                )
+                                                            }
+                                                        }
+
+                                                        LazyRow(
+                                                            modifier = Modifier.fillMaxWidth(),
+                                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            items(languages) { lang ->
+                                                                val isLangSelected = activePopupLanguage == lang
+                                                                Box(
+                                                                    modifier = Modifier
+                                                                        .clip(RoundedCornerShape(12.dp))
+                                                                        .background(
+                                                                            if (isLangSelected) {
+                                                                                when (readerTheme) {
+                                                                                    ReaderTheme.Dark -> Color(0xFF00E5FF).copy(alpha = 0.25f)
+                                                                                    else -> Color(0xFFEADDFF)
+                                                                                }
+                                                                            } else {
+                                                                                when (readerTheme) {
+                                                                                    ReaderTheme.Dark -> Color.White.copy(alpha = 0.1f)
+                                                                                    else -> Color(0xFFE7E0EC)
+                                                                                }
+                                                                            }
+                                                                        )
+                                                                        .clickable { activePopupLanguage = lang }
+                                                                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                                                                        .testTag("popup_lang_chip_$lang")
+                                                                ) {
+                                                                    Text(
+                                                                        text = lang,
+                                                                        fontSize = 10.sp,
+                                                                        fontWeight = if (isLangSelected) FontWeight.Bold else FontWeight.Medium,
+                                                                        color = if (isLangSelected) {
+                                                                            when (readerTheme) {
+                                                                                ReaderTheme.Dark -> Color(0xFF00E5FF)
+                                                                                else -> Color(0xFF21005D)
+                                                                            }
+                                                                        } else {
+                                                                            when (readerTheme) {
+                                                                                ReaderTheme.Dark -> Color.LightGray
+                                                                                else -> Color(0xFF49454F)
+                                                                            }
+                                                                        }
+                                                                    )
+                                                                }
+                                                            }
+                                                        }
+
+                                                        HorizontalDivider(
+                                                            color = when (readerTheme) {
+                                                                ReaderTheme.Dark -> Color.White.copy(alpha = 0.1f)
+                                                                else -> Color(0xFFEADBFF)
+                                                            },
+                                                            thickness = 1.dp
+                                                        )
+
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .clip(RoundedCornerShape(8.dp))
+                                                                .background(
+                                                                    when (readerTheme) {
+                                                                        ReaderTheme.Dark -> Color.Black.copy(alpha = 0.2f)
+                                                                        else -> Color(0xFFFEF7FF)
+                                                                    }
+                                                                )
+                                                                .padding(10.dp)
+                                                        ) {
+                                                            if (translationLoading) {
+                                                                Row(
+                                                                    modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                                                                    horizontalArrangement = Arrangement.Center,
+                                                                    verticalAlignment = Alignment.CenterVertically
+                                                                ) {
+                                                                    CircularProgressIndicator(
+                                                                        modifier = Modifier.size(16.dp),
+                                                                        color = when (readerTheme) {
+                                                                            ReaderTheme.Dark -> Color(0xFF00E5FF)
+                                                                            else -> Color(0xFF6750A4)
+                                                                        },
+                                                                        strokeWidth = 2.dp
+                                                                    )
+                                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                                    Text(
+                                                                        "Translating to $activePopupLanguage...",
+                                                                        fontSize = 11.sp,
+                                                                        color = Color.Gray,
+                                                                        fontStyle = FontStyle.Italic
+                                                                    )
+                                                                }
+                                                            } else {
+                                                                Text(
+                                                                    text = translationResult.ifEmpty { "Waiting for text..." },
+                                                                    fontSize = 13.sp,
+                                                                    lineHeight = 18.sp,
+                                                                    color = when (readerTheme) {
+                                                                        ReaderTheme.Dark -> Color.White
+                                                                        ReaderTheme.Sepia -> Color(0xFF4E342E)
+                                                                        ReaderTheme.Green -> Color(0xFF1B5E20)
+                                                                        else -> Color(0xFF1D1B20)
+                                                                    },
+                                                                    fontFamily = FontFamily.SansSerif
+                                                                )
+                                                            }
+                                                        }
+
+                                                        Row(
+                                                            modifier = Modifier.fillMaxWidth(),
+                                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            Row(
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                            ) {
+                                                                val highlightColors = listOf(
+                                                                    "#FFEB3B", // Neon Yellow
+                                                                    "#00E5FF", // Cyan Light
+                                                                    "#10B981", // Emerald Green
+                                                                    "#EC4899"  // Hot Pink
+                                                                )
+                                                                val hasHighlight = pageHighlights.any { it.textHighlighted == paragraphText }
+
+                                                                if (!hasHighlight) {
+                                                                    highlightColors.forEach { color ->
+                                                                        val javaColor = android.graphics.Color.parseColor(color)
+                                                                        Box(
+                                                                            modifier = Modifier
+                                                                                .size(24.dp)
+                                                                                .clip(CircleShape)
+                                                                                .background(Color(javaColor))
+                                                                                .border(1.dp, Color.White, CircleShape)
+                                                                                .clickable {
+                                                                                    viewModel.addHighlight(color)
+                                                                                    selectedSentenceText = ""
+                                                                                }
+                                                                                .testTag("popup_hl_color_$color")
+                                                                        )
+                                                                    }
+                                                                } else {
+                                                                    IconButton(
+                                                                        onClick = {
+                                                                            val hl = pageHighlights.find { it.textHighlighted == paragraphText }
+                                                                            if (hl != null) viewModel.removeHighlight(hl)
+                                                                            selectedSentenceText = ""
+                                                                        },
+                                                                        modifier = Modifier.size(32.dp).testTag("popup_clear_hl")
+                                                                    ) {
+                                                                        Icon(
+                                                                            imageVector = Icons.Default.DeleteSweep,
+                                                                            contentDescription = "Clear Highlight",
+                                                                            tint = Color(0xFFEF4444),
+                                                                            modifier = Modifier.size(20.dp)
+                                                                        )
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            Row(
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                            ) {
+                                                                IconButton(
+                                                                    onClick = {
+                                                                        if (translationResult.isNotEmpty() && !translationLoading) {
+                                                                            try {
+                                                                                tts?.speak(translationResult, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, null)
+                                                                            } catch (e: Exception) {
+                                                                                Toast.makeText(context, "TTS failed: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+                                                                            }
+                                                                        }
+                                                                    },
+                                                                    modifier = Modifier.size(32.dp).testTag("popup_tts_button"),
+                                                                    enabled = translationResult.isNotEmpty() && !translationLoading
+                                                                ) {
+                                                                    Icon(
+                                                                        imageVector = Icons.Default.VolumeUp,
+                                                                        contentDescription = "Speak translation",
+                                                                        tint = when (readerTheme) {
+                                                                            ReaderTheme.Dark -> Color(0xFF00E5FF)
+                                                                            else -> Color(0xFF6750A4)
+                                                                        },
+                                                                        modifier = Modifier.size(20.dp)
+                                                                    )
+                                                                }
+
+                                                                IconButton(
+                                                                    onClick = {
+                                                                        if (translationResult.isNotEmpty()) {
+                                                                            clipboardManager.setText(AnnotatedString(translationResult))
+                                                                            Toast.makeText(context, "Translation copied to clipboard!", Toast.LENGTH_SHORT).show()
+                                                                        }
+                                                                    },
+                                                                    modifier = Modifier.size(32.dp).testTag("popup_copy_button"),
+                                                                    enabled = translationResult.isNotEmpty()
+                                                                ) {
+                                                                    Icon(
+                                                                        imageVector = Icons.Default.ContentCopy,
+                                                                        contentDescription = "Copy to clipboard",
+                                                                        tint = when (readerTheme) {
+                                                                            ReaderTheme.Dark -> Color(0xFF00E5FF)
+                                                                            else -> Color(0xFF6750A4)
+                                                                        },
+                                                                        modifier = Modifier.size(20.dp)
+                                                                    )
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(24.dp))
+
+                                HorizontalDivider(color = Color.LightGray.copy(alpha = 0.3f), modifier = Modifier.padding(bottom = 12.dp))
+
+                                // Footer replica
                                 Text(
-                                    text = paragraphText,
-                                    color = Color(0xFF1E293B),
-                                    fontSize = 15.sp,
-                                    lineHeight = 22.sp,
-                                    fontFamily = FontFamily.Serif
+                                    text = "Proprietary Pulsar Academic Sync, 2026. All highlights encrypted locally.",
+                                    color = Color.LightGray,
+                                    fontSize = 9.sp,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.fillMaxWidth()
                                 )
                             }
                         }
+                    }
+                }
 
-                        Spacer(modifier = Modifier.height(24.dp))
+                        Spacer(modifier = Modifier.height(60.dp))
+                    }
+                }
 
-                        HorizontalDivider(color = Color.LightGray, modifier = Modifier.padding(bottom = 12.dp))
+                // AI summary drawer panel
+                if (showTranslatorPane) {
+                    TranslatorSheet(
+                        viewModel = viewModel,
+                        onDismiss = { showTranslatorPane = false }
+                    )
+                }
 
-                        // Footer replica
+                // AI summary drawer panel
+                if (showResearchDrawer) {
+                    ResearchEnginePanel(
+                        viewModel = viewModel,
+                        doc = currentDoc,
+                        allDocHighlights = allHighlights.filter { it.documentId == currentDoc.id },
+                        onDismiss = { showResearchDrawer = false }
+                    )
+                }
+
+                // Floating Page HUD Overlay (Fades in/out on scroll/swipe)
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = showFloatingPageIndicator,
+                    enter = fadeIn() + scaleIn(initialScale = 0.8f),
+                    exit = fadeOut() + scaleOut(targetScale = 0.8f),
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .testTag("floating_page_hud")
+                ) {
+                    Card(
+                        shape = RoundedCornerShape(32.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color(0xFF1D1B20).copy(alpha = 0.85f),
+                            contentColor = Color.White
+                        ),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .padding(horizontal = 24.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Book,
+                                contentDescription = "Page Icon",
+                                tint = Color(0xFF00E5FF),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                text = "PAGE $activePage OF ${currentDoc.totalPages}",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = 1.2.sp
+                            )
+                        }
+                    }
+                }
+
+                // Brightness Dimmer Overlay
+                if (brightness < 1.0f) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 1.0f - brightness))
+                    )
+                }
+            }
+
+            // Bottom Controller containing Progress Slider (M3) and Prev/Next buttons
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF0F172A))
+                    .padding(top = 8.dp, bottom = 12.dp)
+            ) {
+                // Progress Slider row
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "$activePage",
+                        color = Color.White,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Slider(
+                        value = activePage.toFloat(),
+                        onValueChange = { pageVal ->
+                            viewModel.changePage(pageVal.toInt())
+                        },
+                        valueRange = 1f..currentDoc.totalPages.toFloat(),
+                        steps = if (currentDoc.totalPages > 2) currentDoc.totalPages - 2 else 0,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("pdf_page_progress_slider"),
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color(0xFF00E5FF),
+                            activeTrackColor = Color(0xFF00E5FF),
+                            inactiveTrackColor = Color.DarkGray
+                        )
+                    )
+                    Text(
+                        text = "${currentDoc.totalPages}",
+                        color = Color.LightGray,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                // Prev / Next actions row
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(
+                        onClick = { viewModel.changePage(activePage - 1) },
+                        enabled = activePage > 1,
+                        colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF00E5FF))
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.KeyboardArrowLeft, contentDescription = "Prev")
+                            Text("PREVIOUS")
+                        }
+                    }
+
+                    TextButton(
+                        onClick = { showOrganizePagesMode = true },
+                        colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF00E5FF))
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.GridView, contentDescription = "Organize", modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("ORGANIZE")
+                        }
+                    }
+
+                    TextButton(
+                        onClick = { viewModel.changePage(activePage + 1) },
+                        enabled = activePage < currentDoc.totalPages,
+                        colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF00E5FF))
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("NEXT")
+                            Icon(Icons.Default.KeyboardArrowRight, contentDescription = "Next")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Modal Option Dialogs & Sheets
+    if (showDocMenu) {
+        DocumentOptionsMenu(
+            title = currentDoc.title,
+            onDismiss = { showDocMenu = false },
+            onViewSettings = { showViewSettingsSheet = true },
+            onGoToPage = { showGoToPageDialog = true },
+            onOrganizePages = { showOrganizePagesMode = true },
+            onConvert = { Toast.makeText(context, "Converting document to editable format...", Toast.LENGTH_SHORT).show() },
+            onShare = { Toast.makeText(context, "Encrypted link copied to share drawer!", Toast.LENGTH_SHORT).show() },
+            onPrint = { Toast.makeText(context, "Formatting print document... Sent to spooler.", Toast.LENGTH_SHORT).show() },
+            onSaveAs = { Toast.makeText(context, "Successfully saved copy to custom directory.", Toast.LENGTH_SHORT).show() },
+            isTranslationEnabled = isRealTimeTranslationEnabled,
+            onTranslationToggle = { viewModel.setRealTimeTranslationEnabled(it) },
+            currentPageStyle = pageStyle,
+            onPageStyleChange = { viewModel.setPageStyle(it) }
+        )
+    }
+
+    if (showViewSettingsSheet) {
+        ViewSettingsDialog(
+            currentViewMode = viewMode,
+            currentTheme = readerTheme,
+            currentBrightness = brightness,
+            currentPageStyle = pageStyle,
+            onViewModeChange = { viewModel.setViewMode(it) },
+            onThemeChange = { viewModel.setReaderTheme(it) },
+            onBrightnessChange = { viewModel.setBrightness(it) },
+            onPageStyleChange = { viewModel.setPageStyle(it) },
+            onDismiss = { showViewSettingsSheet = false }
+        )
+    }
+
+    if (showGoToPageDialog) {
+        var pageInput by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showGoToPageDialog = false },
+            title = { Text("Go to Page") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Enter page number (1 to ${currentDoc.totalPages}):")
+                    OutlinedTextField(
+                        value = pageInput,
+                        onValueChange = { pageInput = it.filter { char -> char.isDigit() } },
+                        modifier = Modifier.fillMaxWidth().testTag("go_to_page_input"),
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val parsed = pageInput.toIntOrNull()
+                        if (parsed != null && parsed in 1..currentDoc.totalPages) {
+                            viewModel.changePage(parsed)
+                            showGoToPageDialog = false
+                        } else {
+                            Toast.makeText(context, "Please enter a valid page number", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                ) {
+                    Text("Go")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showGoToPageDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+}
+
+// Floating Popover for Highlights and Real-time translation toggling
+@Composable
+fun FloatingHighlightPopover(
+    viewModel: PdfViewModel,
+    textHighlighted: String,
+    highlightExists: Boolean,
+    onHighlightColorSelected: (String) -> Unit,
+    onRemoveHighlight: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var isTranslationToggleActive by remember { mutableStateOf(false) }
+    var selectedTargetLanguage by remember { mutableStateOf("Spanish") }
+
+    val translation by viewModel.translationResult.collectAsStateWithLifecycle()
+    val loading by viewModel.translationLoading.collectAsStateWithLifecycle()
+
+    val languages = listOf("English", "Spanish", "French", "Japanese", "German", "Hindi", "Arabic", "Telugu")
+
+    LaunchedEffect(textHighlighted, isTranslationToggleActive, selectedTargetLanguage) {
+        if (textHighlighted.isNotEmpty() && isTranslationToggleActive) {
+            viewModel.translateSelectedText(selectedTargetLanguage)
+        }
+    }
+
+    Card(
+        modifier = modifier
+            .fillMaxWidth(0.92f)
+            .wrapContentHeight()
+            .shadow(16.dp, RoundedCornerShape(24.dp)),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFF7F2FA)),
+        border = BorderStroke(1.5.dp, Color(0xFFEADBFF))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val highlightColors = listOf(
+                        "#FFEB3B", // Neon Yellow
+                        "#00E5FF", // Cyan Light
+                        "#10B981", // Emerald Green
+                        "#EC4899"  // Hot Pink
+                    )
+
+                    if (!highlightExists) {
+                        highlightColors.forEach { color ->
+                            val javaColor = android.graphics.Color.parseColor(color)
+                            Box(
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(javaColor))
+                                    .border(1.5.dp, Color.White, CircleShape)
+                                    .clickable { onHighlightColorSelected(color) }
+                                    .testTag("popover_hl_color_$color")
+                            )
+                        }
+                    } else {
+                        IconButton(
+                            onClick = onRemoveHighlight,
+                            modifier = Modifier.size(36.dp).testTag("popover_clear_hl")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.DeleteSweep,
+                                contentDescription = "Clear Highlight",
+                                tint = Color(0xFFEF4444)
+                            )
+                        }
                         Text(
-                            text = "Proprietary Pulsar Academic Sync, 2026. All highlights encrypted locally.",
-                            color = Color.LightGray,
-                            fontSize = 9.sp,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth()
+                            "Highlighted",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF625B71)
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(60.dp))
-            }
-
-            // Highlighting and Real-time Translator FLOATING ACTIONS Menu
-            androidx.compose.animation.AnimatedVisibility(
-                visible = selectedSentenceText.isNotEmpty(),
-                enter = fadeIn() + slideInVertically(initialOffsetY = { it / 2 }),
-                exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 2 }),
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 20.dp)
-            ) {
-                HighlightTranslatorToolbar(
-                    viewModel = viewModel,
-                    highlightExists = pageHighlights.any { it.textHighlighted == selectedSentenceText },
-                    onHighlightColorSelected = { colorHex ->
-                        viewModel.addHighlight(colorHex)
-                        selectedSentenceText = ""
-                    },
-                    onRemoveHighlight = {
-                        val hl = pageHighlights.find { it.textHighlighted == selectedSentenceText }
-                        if (hl != null) viewModel.removeHighlight(hl)
-                        selectedSentenceText = ""
-                    },
-                    onTriggerTranslate = {
-                        showTranslatorPane = true
-                    }
+                Box(
+                    modifier = Modifier
+                        .width(1.dp)
+                        .height(24.dp)
+                        .background(Color(0xFFCAC4D0))
                 )
-            }
 
-            // Real-Time Translator Shelf
-            if (showTranslatorPane) {
-                TranslatorSheet(
-                    viewModel = viewModel,
-                    onDismiss = { showTranslatorPane = false }
-                )
-            }
-
-            // AI summary drawer panel
-            if (showResearchDrawer) {
-                ResearchEnginePanel(
-                    viewModel = viewModel,
-                    doc = currentDoc,
-                    allDocHighlights = allHighlights.filter { it.documentId == currentDoc.id },
-                    onDismiss = { showResearchDrawer = false }
-                )
-            }
-            }
-        }
-
-        // Bottom Reader Navigation Bar (Next/Prev buttons)
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color(0xFF0F172A))
-                .padding(vertical = 12.dp, horizontal = 24.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            TextButton(
-                onClick = { viewModel.changePage(activePage - 1) },
-                enabled = activePage > 1,
-                colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF00E5FF))
-            ) {
-                Row {
-                    Icon(Icons.Default.KeyboardArrowLeft, contentDescription = "Prev")
-                    Text("PREVIOUS")
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "Translate",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isTranslationToggleActive) Color(0xFF6750A4) else Color(0xFF49454F)
+                    )
+                    Switch(
+                        checked = isTranslationToggleActive,
+                        onCheckedChange = { isTranslationToggleActive = it },
+                        modifier = Modifier.testTag("popover_translation_switch"),
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = Color(0xFF6750A4),
+                            uncheckedThumbColor = Color(0xFF79747E),
+                            uncheckedTrackColor = Color(0xFFE7E0EC)
+                        )
+                    )
                 }
             }
 
-            Text(
-                "PAGE $activePage of ${currentDoc.totalPages}",
-                color = Color.White,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold
-            )
+            if (isTranslationToggleActive) {
+                HorizontalDivider(color = Color(0xFFEADBFF), thickness = 1.dp)
 
-            TextButton(
-                onClick = { viewModel.changePage(activePage + 1) },
-                enabled = activePage < currentDoc.totalPages,
-                colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF00E5FF))
-            ) {
-                Row {
-                    Text("NEXT")
-                    Icon(Icons.Default.KeyboardArrowRight, contentDescription = "Next")
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    items(languages) { lang ->
+                        val isSelected = selectedTargetLanguage == lang
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(
+                                    if (isSelected) Color(0xFFEADDFF) else Color(0xFFE7E0EC)
+                                )
+                                .clickable { selectedTargetLanguage = lang }
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                                .testTag("popover_lang_chip_$lang")
+                        ) {
+                            Text(
+                                text = lang,
+                                fontSize = 11.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isSelected) Color(0xFF21005D) else Color(0xFF49454F)
+                            )
+                        }
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xFFFEF7FF))
+                        .border(1.dp, Color(0xFFEADDFF), RoundedCornerShape(12.dp))
+                        .padding(12.dp)
+                ) {
+                    if (loading) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(24.dp),
+                                color = Color(0xFF6750A4),
+                                strokeWidth = 2.dp
+                            )
+                            Text(
+                                "Translating selected text...",
+                                fontSize = 11.sp,
+                                color = Color(0xFF49454F),
+                                fontStyle = FontStyle.Italic
+                            )
+                        }
+                    } else {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Translate,
+                                        contentDescription = "Translated text",
+                                        tint = Color(0xFF6750A4),
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Text(
+                                        text = "TRANSLATED TO ${selectedTargetLanguage.uppercase()}:",
+                                        color = Color(0xFF6750A4),
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+
+                            Text(
+                                text = translation.ifEmpty { "Waiting for text..." },
+                                fontSize = 13.sp,
+                                lineHeight = 18.sp,
+                                color = Color(0xFF1D1B20),
+                                fontFamily = FontFamily.SansSerif
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -788,7 +2264,7 @@ fun TranslatorSheet(
     viewModel: PdfViewModel,
     onDismiss: () -> Unit
 ) {
-    val languages = listOf("Spanish", "French", "Japanese", "German", "Hindi", "Arabic")
+    val languages = listOf("English", "Spanish", "French", "Japanese", "German", "Hindi", "Arabic", "Telugu")
     var selectedLanguage by remember { mutableStateOf("Spanish") }
 
     val translation by viewModel.translationResult.collectAsStateWithLifecycle()
@@ -1186,7 +2662,10 @@ fun ResearchEnginePanel(
 
 // OCR Scan Tool Screen with Live Scanner replica & Dynamic text recognizer
 @Composable
-fun OcrScannerScreen(viewModel: PdfViewModel) {
+fun OcrScannerScreen(
+    viewModel: PdfViewModel,
+    onOpenMenu: () -> Unit
+) {
     val ocrText by viewModel.ocrText.collectAsStateWithLifecycle()
     val loading by viewModel.ocrLoading.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -1216,18 +2695,37 @@ fun OcrScannerScreen(viewModel: PdfViewModel) {
             .padding(16.dp)
     ) {
         item {
-            Text(
-                "Mobile OCR character Recognition",
-                fontSize = 24.sp,
-                fontWeight = FontWeight.ExtraBold,
-                color = Color(0xFF1D1B20)
-            )
-            Text(
-                "Snap real academic articles to read, edit & sync to cloud instantly.",
-                fontSize = 13.sp,
-                color = Color(0xFF49454F),
-                modifier = Modifier.padding(top = 4.dp, bottom = 16.dp)
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = onOpenMenu,
+                    modifier = Modifier.testTag("ocr_menu_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Menu,
+                        contentDescription = "Open Navigation Menu",
+                        tint = Color(0xFF6750A4),
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Column {
+                    Text(
+                        "Mobile OCR character Recognition",
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = Color(0xFF1D1B20)
+                    )
+                    Text(
+                        "Snap academic articles to read, edit & sync.",
+                        fontSize = 11.sp,
+                        color = Color(0xFF49454F)
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
 
             // Live Camera viewfinder simulation framework
             if (!hasRequestedScan) {
@@ -1429,7 +2927,10 @@ fun OcrScannerScreen(viewModel: PdfViewModel) {
 
 // Modern sync hub monitoring local vs remote logs of mobile + desktop
 @Composable
-fun SyncConsoleScreen(viewModel: PdfViewModel) {
+fun SyncConsoleScreen(
+    viewModel: PdfViewModel,
+    onOpenMenu: () -> Unit
+) {
     val devices by viewModel.devices.collectAsStateWithLifecycle()
     val syncState by viewModel.syncingState.collectAsStateWithLifecycle()
 
@@ -1454,19 +2955,30 @@ fun SyncConsoleScreen(viewModel: PdfViewModel) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = 16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                IconButton(
+                    onClick = onOpenMenu,
+                    modifier = Modifier.testTag("sync_menu_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Menu,
+                        contentDescription = "Open Navigation Menu",
+                        tint = Color(0xFF6750A4),
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         "Pulse Sync Hub",
-                        fontSize = 24.sp,
+                        fontSize = 20.sp,
                         fontWeight = FontWeight.ExtraBold,
                         color = Color(0xFF1D1B20)
                     )
                     Text(
                         "Cross-platform Sync Monitor Console",
-                        fontSize = 12.sp,
+                        fontSize = 11.sp,
                         color = Color(0xFF49454F)
                     )
                 }
@@ -2236,4 +3748,972 @@ fun AreaOcrResultDialog(
             .padding(16.dp)
             .background(Color.White, shape = RoundedCornerShape(28.dp))
     )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun DocumentOptionsMenu(
+    title: String,
+    onDismiss: () -> Unit,
+    onViewSettings: () -> Unit,
+    onGoToPage: () -> Unit,
+    onOrganizePages: () -> Unit,
+    onConvert: () -> Unit,
+    onShare: () -> Unit,
+    onPrint: () -> Unit,
+    onSaveAs: () -> Unit,
+    isTranslationEnabled: Boolean,
+    onTranslationToggle: (Boolean) -> Unit,
+    currentPageStyle: PageStyle,
+    onPageStyleChange: (PageStyle) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {},
+        dismissButton = {},
+        containerColor = Color(0xFF1D1B20),
+        shape = RoundedCornerShape(16.dp),
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        modifier = Modifier
+            .fillMaxWidth(0.9f)
+            .wrapContentHeight()
+            .padding(16.dp),
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp)
+            ) {
+                Text(
+                    text = title,
+                    color = Color.White,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "Modified 27 Jun 2026 08:31:21",
+                    color = Color.LightGray,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
+
+                // Page Style Section
+                Text(
+                    text = "PAGE LAYOUT STYLE",
+                    color = Color.LightGray.copy(alpha = 0.8f),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val styles = listOf(
+                        PageStyle.Standard to "Standard",
+                        PageStyle.Reflow to "Reflow",
+                        PageStyle.Adaptive to "Adaptive"
+                    )
+                    styles.forEach { (style, name) ->
+                        val isSelected = currentPageStyle == style
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (isSelected) Color(0xFF6750A4) else Color(0xFF2C2C2C))
+                                .border(
+                                    BorderStroke(
+                                        1.dp,
+                                        if (isSelected) Color(0xFF6750A4) else Color.DarkGray
+                                    ),
+                                    RoundedCornerShape(8.dp)
+                                )
+                                .clickable { onPageStyleChange(style) }
+                                .padding(vertical = 8.dp)
+                                .testTag("page_style_chip_${name.lowercase()}"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    imageVector = when (style) {
+                                        PageStyle.Standard -> Icons.Default.MenuBook
+                                        PageStyle.Reflow -> Icons.Default.WrapText
+                                        PageStyle.Adaptive -> Icons.Default.Smartphone
+                                    },
+                                    contentDescription = name,
+                                    tint = if (isSelected) Color.White else Color.Gray,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = name,
+                                    color = if (isSelected) Color.White else Color.Gray,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+                    }
+                }
+                
+                HorizontalDivider(color = Color.Gray.copy(alpha = 0.5f), thickness = 1.dp)
+                
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                val items = listOf(
+                    Triple("View Settings", Icons.Default.Visibility, onViewSettings),
+                    Triple("Go to Page", Icons.Default.ArrowForward, onGoToPage),
+                    Triple("Real-time Translation", Icons.Default.Translate, { onTranslationToggle(!isTranslationEnabled) }),
+                    Triple("Organize Pages", Icons.Default.GridView, onOrganizePages),
+                    Triple("Convert", Icons.Default.Transform, onConvert),
+                    Triple("Share", Icons.Default.Share, onShare),
+                    Triple("Print", Icons.Default.Print, onPrint),
+                    Triple("Save as", Icons.Default.Save, onSaveAs)
+                )
+                
+                items.forEach { (label, icon, action) ->
+                    val isToggleItem = label == "Real-time Translation"
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { 
+                                action()
+                                if (!isToggleItem) {
+                                    onDismiss()
+                                }
+                            }
+                            .padding(vertical = 14.dp, horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            Icon(
+                                imageVector = icon,
+                                contentDescription = label,
+                                tint = Color.White,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Text(
+                                text = label,
+                                color = Color.White,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        if (isToggleItem) {
+                            Switch(
+                                checked = isTranslationEnabled,
+                                onCheckedChange = { onTranslationToggle(it) },
+                                modifier = Modifier.testTag("dialog_translation_switch"),
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color(0xFF6750A4),
+                                    checkedTrackColor = Color(0xFFE8DEF8),
+                                    uncheckedThumbColor = Color.Gray,
+                                    uncheckedTrackColor = Color.DarkGray
+                                )
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.ChevronRight,
+                                contentDescription = "Arrow",
+                                tint = Color.Gray,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    )
+}
+
+@Composable
+fun ViewSettingsDialog(
+    currentViewMode: ViewMode,
+    currentTheme: ReaderTheme,
+    currentBrightness: Float,
+    currentPageStyle: PageStyle,
+    onViewModeChange: (ViewMode) -> Unit,
+    onThemeChange: (ReaderTheme) -> Unit,
+    onBrightnessChange: (Float) -> Unit,
+    onPageStyleChange: (PageStyle) -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable { onDismiss() }
+        ) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+                    .clickable(enabled = false) {}
+                    .shadow(16.dp, RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)),
+                shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF1D1B20)),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .width(40.dp)
+                            .height(4.dp)
+                            .background(Color.Gray.copy(alpha = 0.5f), RoundedCornerShape(2.dp))
+                    )
+                    
+                    Spacer(modifier = Modifier.height(16.dp))
+                    
+                    Text(
+                        text = "View Settings",
+                        color = Color.White,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.align(Alignment.Start)
+                    )
+                    
+                    Spacer(modifier = Modifier.height(18.dp))
+                    
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Card(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { onViewModeChange(ViewMode.Vertical) },
+                            shape = RoundedCornerShape(12.dp),
+                            border = if (currentViewMode == ViewMode.Vertical) BorderStroke(2.dp, Color(0xFF00E5FF)) else null,
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (currentViewMode == ViewMode.Vertical) Color(0xFF2C2C2C) else Color(0xFF121212)
+                            )
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CalendarViewWeek,
+                                    contentDescription = "Vertical",
+                                    tint = if (currentViewMode == ViewMode.Vertical) Color(0xFF00E5FF) else Color.Gray,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                                Text(
+                                    text = "Vertical",
+                                    color = if (currentViewMode == ViewMode.Vertical) Color.White else Color.Gray,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp
+                                )
+                            }
+                        }
+                        
+                        Card(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { onViewModeChange(ViewMode.Horizontal) },
+                            shape = RoundedCornerShape(12.dp),
+                            border = if (currentViewMode == ViewMode.Horizontal) BorderStroke(2.dp, Color(0xFF00E5FF)) else null,
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (currentViewMode == ViewMode.Horizontal) Color(0xFF2C2C2C) else Color(0xFF121212)
+                            )
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Book,
+                                    contentDescription = "Horizontal",
+                                    tint = if (currentViewMode == ViewMode.Horizontal) Color(0xFF00E5FF) else Color.Gray,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                                Text(
+                                    text = "Horizontal",
+                                    color = if (currentViewMode == ViewMode.Horizontal) Color.White else Color.Gray,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp
+                                )
+                            }
+                        }
+                    }
+                    
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    Text(
+                        text = "Page Style",
+                        color = Color.White,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.align(Alignment.Start)
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        listOf(
+                            PageStyle.Standard to "Standard",
+                            PageStyle.Reflow to "Reflow",
+                            PageStyle.Adaptive to "Adaptive"
+                        ).forEach { (style, name) ->
+                            val isSelected = currentPageStyle == style
+                            Card(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable { onPageStyleChange(style) }
+                                    .testTag("dialog_page_style_chip_${name.lowercase()}"),
+                                shape = RoundedCornerShape(12.dp),
+                                border = if (isSelected) BorderStroke(2.dp, Color(0xFF00E5FF)) else null,
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (isSelected) Color(0xFF2C2C2C) else Color(0xFF121212)
+                                )
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = when (style) {
+                                            PageStyle.Standard -> Icons.Default.MenuBook
+                                            PageStyle.Reflow -> Icons.Default.WrapText
+                                            PageStyle.Adaptive -> Icons.Default.Smartphone
+                                        },
+                                        contentDescription = name,
+                                        tint = if (isSelected) Color(0xFF00E5FF) else Color.Gray,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Text(
+                                        text = name,
+                                        color = if (isSelected) Color.White else Color.Gray,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    
+                    Spacer(modifier = Modifier.height(24.dp))
+                    
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.LightMode,
+                            contentDescription = "Dim",
+                            tint = Color.Gray,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        
+                        Slider(
+                            value = currentBrightness,
+                            onValueChange = onBrightnessChange,
+                            valueRange = 0.1f..1.0f,
+                            modifier = Modifier.weight(1f),
+                            colors = SliderDefaults.colors(
+                                thumbColor = Color(0xFF00E5FF),
+                                activeTrackColor = Color(0xFF00E5FF),
+                                inactiveTrackColor = Color.DarkGray
+                            )
+                        )
+                        
+                        Icon(
+                            imageVector = Icons.Default.LightMode,
+                            contentDescription = "Bright",
+                            tint = Color.White,
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
+                    
+                    Spacer(modifier = Modifier.height(24.dp))
+                    
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        ThemeCircle(
+                            bgColor = Color(0xFF424242),
+                            ringColor = if (currentTheme == ReaderTheme.System) Color(0xFF00E5FF) else Color.Transparent,
+                            icon = Icons.Default.Settings,
+                            iconTint = Color.White,
+                            onClick = { onThemeChange(ReaderTheme.System) }
+                        )
+                        
+                        ThemeCircle(
+                            bgColor = Color.White,
+                            ringColor = if (currentTheme == ReaderTheme.Light) Color(0xFF00E5FF) else Color.Transparent,
+                            icon = Icons.Default.LightMode,
+                            iconTint = Color.Black,
+                            onClick = { onThemeChange(ReaderTheme.Light) }
+                        )
+                        
+                        ThemeCircle(
+                            bgColor = Color(0xFF121212),
+                            ringColor = if (currentTheme == ReaderTheme.Dark) Color(0xFF00E5FF) else Color.Transparent,
+                            icon = Icons.Default.DarkMode,
+                            iconTint = Color.White,
+                            onClick = { onThemeChange(ReaderTheme.Dark) }
+                        )
+                        
+                        ThemeCircle(
+                            bgColor = Color(0xFFC8E6C9),
+                            ringColor = if (currentTheme == ReaderTheme.Green) Color(0xFF00E5FF) else Color.Transparent,
+                            icon = Icons.Default.Circle,
+                            iconTint = Color(0xFF1B5E20),
+                            onClick = { onThemeChange(ReaderTheme.Green) }
+                        )
+                        
+                        ThemeCircle(
+                            bgColor = Color(0xFFF4ECD8),
+                            ringColor = if (currentTheme == ReaderTheme.Sepia) Color(0xFF00E5FF) else Color.Transparent,
+                            icon = Icons.Default.Circle,
+                            iconTint = Color(0xFF4E342E),
+                            onClick = { onThemeChange(ReaderTheme.Sepia) }
+                        )
+                    }
+                    
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ThemeCircle(
+    bgColor: Color,
+    ringColor: Color,
+    icon: ImageVector,
+    iconTint: Color,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .size(48.dp)
+            .clip(CircleShape)
+            .border(BorderStroke(if (ringColor != Color.Transparent) 3.dp else 1.dp, if (ringColor != Color.Transparent) ringColor else Color.Gray), CircleShape)
+            .background(bgColor)
+            .clickable { onClick() },
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = iconTint,
+            modifier = Modifier.size(20.dp)
+        )
+    }
+}
+
+@Composable
+fun OrganizePagesView(
+    viewModel: PdfViewModel,
+    currentDoc: DocumentEntity,
+    documentPages: List<PdfPageModel>,
+    pageRotations: Map<Int, Float>,
+    onDismiss: () -> Unit
+) {
+    var selectedPages by remember { mutableStateOf(setOf<Int>()) }
+    val context = LocalContext.current
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF121212))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF1D1B20))
+                .padding(horizontal = 8.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onDismiss) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Close",
+                    tint = Color.White
+                )
+            }
+            
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 8.dp)
+            ) {
+                Text(
+                    text = "Organize Pages",
+                    color = Color.White,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = if (selectedPages.isEmpty()) "Select pages" else "${selectedPages.size} Selected",
+                    color = Color(0xFF00E5FF),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+
+            IconButton(
+                onClick = {
+                    viewModel.addPage()
+                    Toast.makeText(context, "New blank page added!", Toast.LENGTH_SHORT).show()
+                }
+            ) {
+                Icon(
+                    imageVector = Icons.Default.NoteAdd,
+                    contentDescription = "Add page",
+                    tint = Color.White
+                )
+            }
+
+            IconButton(
+                enabled = selectedPages.isNotEmpty() || documentPages.isNotEmpty(),
+                onClick = {
+                    val pageToDuplicate = selectedPages.firstOrNull() ?: viewModel.currentPage.value
+                    viewModel.duplicatePage(pageToDuplicate)
+                    Toast.makeText(context, "Page duplicated successfully!", Toast.LENGTH_SHORT).show()
+                }
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ContentCopy,
+                    contentDescription = "Duplicate page",
+                    tint = if (selectedPages.isNotEmpty()) Color.White else Color.Gray
+                )
+            }
+
+            IconButton(
+                enabled = selectedPages.isNotEmpty() || documentPages.isNotEmpty(),
+                onClick = {
+                    val pageToRotate = selectedPages.firstOrNull() ?: viewModel.currentPage.value
+                    viewModel.rotatePage(pageToRotate)
+                    Toast.makeText(context, "Page rotated 90°", Toast.LENGTH_SHORT).show()
+                }
+            ) {
+                Icon(
+                    imageVector = Icons.Default.RotateRight,
+                    contentDescription = "Rotate page",
+                    tint = if (selectedPages.isNotEmpty()) Color.White else Color.Gray
+                )
+            }
+
+            IconButton(
+                enabled = documentPages.size > 1 && (selectedPages.isNotEmpty() || documentPages.isNotEmpty()),
+                onClick = {
+                    val pageToDelete = selectedPages.firstOrNull() ?: viewModel.currentPage.value
+                    viewModel.deletePage(pageToDelete)
+                    selectedPages = emptySet()
+                    Toast.makeText(context, "Page deleted!", Toast.LENGTH_SHORT).show()
+                }
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Delete,
+                    contentDescription = "Delete page",
+                    tint = if (documentPages.size > 1) Color.Red else Color.Gray
+                )
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(2),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalArrangement = Arrangement.spacedBy(20.dp),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                items(count = documentPages.size) { index ->
+                    val page = documentPages[index]
+                    val isSelected = selectedPages.contains(page.pageNumber)
+                    val rotation = pageRotations[page.pageNumber] ?: 0f
+
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                selectedPages = if (isSelected) {
+                                    selectedPages - page.pageNumber
+                                } else {
+                                    selectedPages + page.pageNumber
+                                }
+                            }
+                            .border(
+                                BorderStroke(
+                                    width = if (isSelected) 3.dp else 1.dp,
+                                    color = if (isSelected) Color(0xFF00E5FF) else Color.Gray.copy(alpha = 0.3f)
+                                ),
+                                RoundedCornerShape(12.dp)
+                            ),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E))
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(
+                                    checked = isSelected,
+                                    onCheckedChange = { checked ->
+                                        selectedPages = if (checked == true) {
+                                            selectedPages + page.pageNumber
+                                        } else {
+                                            selectedPages - page.pageNumber
+                                        }
+                                    },
+                                    colors = CheckboxDefaults.colors(
+                                        checkedColor = Color(0xFF00E5FF),
+                                        checkmarkColor = Color.Black
+                                    )
+                                )
+                                Text(
+                                    text = "${page.pageNumber}",
+                                    color = Color.White,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(140.dp)
+                                    .rotate(rotation),
+                                shape = RoundedCornerShape(6.dp),
+                                colors = CardDefaults.cardColors(containerColor = Color.White)
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(8.dp)
+                                ) {
+                                    val textSnippet = page.paragraphs.firstOrNull() ?: ""
+                                    Text(
+                                        text = textSnippet,
+                                        fontSize = 8.sp,
+                                        lineHeight = 11.sp,
+                                        color = Color.Black,
+                                        maxLines = 10,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF1D1B20))
+                .padding(vertical = 12.dp),
+            horizontalArrangement = Arrangement.SpaceAround,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            val bottomTabs = listOf(
+                Pair("Annotate", Icons.Default.Brush),
+                Pair("Edit", Icons.Default.Edit),
+                Pair("Organize Pages", Icons.Default.GridView),
+                Pair("Fill & Sign", Icons.Default.Create)
+            )
+
+            bottomTabs.forEach { (tabName, icon) ->
+                val isActive = tabName == "Organize Pages"
+                Column(
+                    modifier = Modifier
+                        .clickable {
+                            if (!isActive) {
+                                Toast.makeText(context, "$tabName Mode selected", Toast.LENGTH_SHORT).show()
+                                if (tabName == "Annotate" || tabName == "Edit") {
+                                    onDismiss()
+                                }
+                            }
+                        }
+                        .padding(horizontal = 12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = tabName,
+                        tint = if (isActive) Color(0xFF00E5FF) else Color.Gray,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Text(
+                        text = tabName,
+                        color = if (isActive) Color(0xFF00E5FF) else Color.Gray,
+                        fontSize = 11.sp,
+                        fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun MainMenuTranslationDialog(
+    viewModel: PdfViewModel,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    var inputText by remember { mutableStateOf("") }
+    val languages = listOf("English", "Spanish", "French", "Japanese", "German", "Hindi", "Arabic", "Telugu")
+    var selectedLanguage by remember { mutableStateOf("Spanish") }
+    
+    val translationResult by viewModel.translationResult.collectAsStateWithLifecycle()
+    val translationLoading by viewModel.translationLoading.collectAsStateWithLifecycle()
+    val clipboardManager = LocalClipboardManager.current
+    
+    var tts by remember { mutableStateOf<android.speech.tts.TextToSpeech?>(null) }
+    DisposableEffect(context) {
+        val ttsInstance = android.speech.tts.TextToSpeech(context) { _ -> }
+        tts = ttsInstance
+        onDispose {
+            ttsInstance.stop()
+            ttsInstance.shutdown()
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(24.dp)
+                .testTag("translation_dialog_card"),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFFFEF7FF)),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(24.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                // Header
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Global Translator",
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF6750A4)
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close dialog")
+                    }
+                }
+                
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                // Input Field
+                OutlinedTextField(
+                    value = inputText,
+                    onValueChange = { inputText = it },
+                    label = { Text("Text to translate") },
+                    placeholder = { Text("Type or paste academic phrases...") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(120.dp)
+                        .testTag("translator_input_field"),
+                    shape = RoundedCornerShape(12.dp)
+                )
+                
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                // Target Language Selector Header
+                Text(
+                    text = "TARGET LANGUAGE",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF49454F),
+                    letterSpacing = 0.5.sp
+                )
+                
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                // Horizontal list of languages (using custom chips style matching TranslatorSheet)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    languages.forEach { lang ->
+                        val isSelected = selectedLanguage == lang
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(if (isSelected) Color(0xFF6750A4) else Color.White)
+                                .border(
+                                    BorderStroke(
+                                        1.dp,
+                                        if (isSelected) Color(0xFF6750A4) else Color(0xFFCAC4D0)
+                                    ),
+                                    RoundedCornerShape(20.dp)
+                                )
+                                .clickable { selectedLanguage = lang }
+                                .padding(horizontal = 14.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = lang,
+                                color = if (isSelected) Color.White else Color(0xFF49454F),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                }
+                
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                // Action Buttons (Clear, Translate)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { inputText = "" },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Clear")
+                    }
+                    
+                    Button(
+                        onClick = {
+                            viewModel.translateCustomText(inputText, selectedLanguage)
+                        },
+                        modifier = Modifier
+                            .weight(1.5f)
+                            .testTag("translator_translate_btn"),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6750A4)),
+                        shape = RoundedCornerShape(12.dp),
+                        enabled = inputText.isNotBlank() && !translationLoading
+                    ) {
+                        if (translationLoading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                color = Color.White,
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Text("Translate")
+                        }
+                    }
+                }
+                
+                Spacer(modifier = Modifier.height(20.dp))
+                
+                // Result Box
+                if (translationResult.isNotEmpty()) {
+                    Text(
+                        text = "TRANSLATION RESULT ($selectedLanguage):",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF6750A4),
+                        letterSpacing = 0.5.sp
+                    )
+                    
+                    Spacer(modifier = Modifier.height(8.dp))
+                    
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFFF3EDF7), RoundedCornerShape(12.dp))
+                            .border(1.dp, Color(0xFFE8DEF8), RoundedCornerShape(12.dp))
+                            .padding(16.dp)
+                    ) {
+                        Column {
+                            Text(
+                                text = translationResult,
+                                fontSize = 14.sp,
+                                color = Color(0xFF1D1B20)
+                            )
+                            
+                            Spacer(modifier = Modifier.height(12.dp))
+                            
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // TTS Button
+                                IconButton(
+                                    onClick = {
+                                        tts?.speak(translationResult, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, null)
+                                    },
+                                    enabled = !translationLoading
+                                ) {
+                                    Icon(Icons.Default.VolumeUp, contentDescription = "Read translation aloud", tint = Color(0xFF6750A4))
+                                }
+                                
+                                Spacer(modifier = Modifier.width(8.dp))
+                                
+                                // Copy Button
+                                IconButton(
+                                    onClick = {
+                                        clipboardManager.setText(AnnotatedString(translationResult))
+                                        Toast.makeText(context, "Translation copied!", Toast.LENGTH_SHORT).show()
+                                    }
+                                ) {
+                                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy translation", tint = Color(0xFF6750A4))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
