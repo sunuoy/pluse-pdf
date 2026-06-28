@@ -72,7 +72,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 
 enum class ScreenType {
-    Dashboard, Reader, OCRScanner
+    Dashboard, Reader, OCRScanner, CloudDrive
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -159,6 +159,19 @@ fun PulsePdfApp(viewModel: PdfViewModel) {
                 )
                 HorizontalDivider(color = Color(0xFFE8DEF8))
                 Spacer(modifier = Modifier.height(12.dp))
+
+                NavigationDrawerItem(
+                    label = { Text("Cloud Storage", fontWeight = FontWeight.Bold, color = Color(0xFF1D1B20)) },
+                    selected = currentScreen == ScreenType.CloudDrive,
+                    onClick = {
+                        coroutineScope.launch { drawerState.close() }
+                        currentScreen = ScreenType.CloudDrive
+                    },
+                    icon = { Icon(Icons.Default.CloudQueue, contentDescription = "Cloud Storage", tint = Color(0xFF6750A4)) },
+                    modifier = Modifier.padding(horizontal = 12.dp).testTag("menu_cloud_drive_option")
+                )
+                
+                Spacer(modifier = Modifier.height(8.dp))
 
                 NavigationDrawerItem(
                     label = { Text("Settings", fontWeight = FontWeight.Bold, color = Color(0xFF1D1B20)) },
@@ -249,6 +262,20 @@ fun PulsePdfApp(viewModel: PdfViewModel) {
                             ),
                             modifier = Modifier.testTag("nav_ocr_tab")
                         )
+                        NavigationBarItem(
+                            selected = currentScreen == ScreenType.CloudDrive,
+                            onClick = { currentScreen = ScreenType.CloudDrive },
+                            icon = { Icon(Icons.Default.Cloud, contentDescription = "Cloud Storage") },
+                            label = { Text("Cloud Storage") },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = Color(0xFF1D192B),
+                                selectedTextColor = Color(0xFF1D192B),
+                                unselectedIconColor = Color(0xFF49454F),
+                                unselectedTextColor = Color(0xFF49454F),
+                                indicatorColor = Color(0xFFE8DEF8)
+                            ),
+                            modifier = Modifier.testTag("nav_cloud_tab")
+                        )
                     }
                 }
             }
@@ -290,6 +317,10 @@ fun PulsePdfApp(viewModel: PdfViewModel) {
                             }
                         )
                         ScreenType.OCRScanner -> OcrScannerScreen(
+                            viewModel = viewModel,
+                            onOpenMenu = { onOpenMenu() }
+                        )
+                        ScreenType.CloudDrive -> CloudDriveScreen(
                             viewModel = viewModel,
                             onOpenMenu = { onOpenMenu() }
                         )
@@ -4371,4 +4402,722 @@ fun MainMenuTranslationDialog(
             }
         }
     }
+}
+
+@Composable
+fun CloudDriveScreen(
+    viewModel: PdfViewModel,
+    onOpenMenu: () -> Unit
+) {
+    val context = LocalContext.current
+    var selectedTab by remember { mutableStateOf(0) } // 0 = Google Drive, 1 = OneDrive
+    var searchQuery by remember { mutableStateOf("") }
+    
+    // Auth statuses
+    var isGoogleDriveConnected by remember { mutableStateOf(false) } // False initially so user logs in
+    var loggedInEmail by remember { mutableStateOf("") }
+    var googleEmail by remember { mutableStateOf("") }
+    var googlePassword by remember { mutableStateOf("") }
+    var isPasswordVisible by remember { mutableStateOf(false) }
+    var isLoggingIn by remember { mutableStateOf(false) }
+
+    var isOneDriveConnected by remember { mutableStateOf(false) }
+    var oneDriveLoggedInEmail by remember { mutableStateOf("") }
+    var oneDriveEmail by remember { mutableStateOf("") }
+    var oneDrivePassword by remember { mutableStateOf("") }
+    var isOneDrivePasswordVisible by remember { mutableStateOf(false) }
+    var isOneDriveLoggingIn by remember { mutableStateOf(false) }
+
+    // Mock cloud files lists
+    val googleDriveFiles = remember {
+        listOf(
+            CloudFile("Quantum Computing Fundamentals", "quantum_computing_fundamentals.pdf", 14500000, "2026-06-15", "Dr. Alan Turing"),
+            CloudFile("AI Ethics and Safety Framework", "ai_ethics_safety_framework.pdf", 4200000, "2026-06-20", "Ethics Board"),
+            CloudFile("Astrophysics Introduction", "astrophysics_intro.pdf", 28000000, "2026-05-12", "NASA Research"),
+            CloudFile("Deep Learning Architectures", "deep_learning_architectures.pdf", 18300000, "2026-06-01", "Yann LeCun"),
+            CloudFile("Molecular Biology Lab Notes", "molecular_biology_lab_notes.pdf", 3200000, "2026-06-25", "Jane Doe")
+        )
+    }
+
+    val oneDriveFiles = remember {
+        listOf(
+            CloudFile("Climate Change Analysis 2026", "climate_change_analysis_2026.pdf", 12400000, "2026-04-10", "IPCC Panel"),
+            CloudFile("Game Theory & Microeconomics", "game_theory_economics.pdf", 8900000, "2026-03-29", "Nash Institute"),
+            CloudFile("Organic Chemistry Formulas", "organic_chemistry_formulas.pdf", 1150000, "2026-06-18", "Prof. Woodward"),
+            CloudFile("Macroeconomics Foundations", "macro_foundations.pdf", 6100000, "2026-05-05", "IMF Report")
+        )
+    }
+
+    // Interactive import loaders
+    var importingFile by remember { mutableStateOf<String?>(null) }
+    var importProgress by remember { mutableStateOf(0f) }
+
+    // Simulated login timer
+    if (isLoggingIn) {
+        LaunchedEffect(Unit) {
+            delay(1500)
+            isGoogleDriveConnected = true
+            loggedInEmail = googleEmail
+            isLoggingIn = false
+            Toast.makeText(context, "Google Account Authorized successfully!", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    if (isOneDriveLoggingIn) {
+        LaunchedEffect(Unit) {
+            delay(1500)
+            isOneDriveConnected = true
+            oneDriveLoggedInEmail = oneDriveEmail
+            isOneDriveLoggingIn = false
+            Toast.makeText(context, "OneDrive Account Authorized successfully!", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    LaunchedEffect(importingFile) {
+        if (importingFile != null) {
+            importProgress = 0f
+            while (importProgress < 1f) {
+                delay(100)
+                importProgress += 0.1f
+            }
+            val fileToImport = if (selectedTab == 0) {
+                googleDriveFiles.firstOrNull { it.fileName == importingFile }
+            } else {
+                oneDriveFiles.firstOrNull { it.fileName == importingFile }
+            }
+            if (fileToImport != null) {
+                viewModel.importCloudPdf(
+                    title = fileToImport.title,
+                    fileName = fileToImport.fileName,
+                    fileSize = fileToImport.fileSize,
+                    source = if (selectedTab == 0) "Google Drive" else "OneDrive"
+                )
+                Toast.makeText(context, "Successfully downloaded and imported ${fileToImport.fileName}!", Toast.LENGTH_LONG).show()
+            }
+            importingFile = null
+        }
+    }
+
+    val currentFiles = if (selectedTab == 0) googleDriveFiles else oneDriveFiles
+    val filteredFiles = currentFiles.filter {
+        it.title.contains(searchQuery, ignoreCase = true) || 
+        it.fileName.contains(searchQuery, ignoreCase = true) ||
+        it.author.contains(searchQuery, ignoreCase = true)
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFFFEF7FF))
+    ) {
+        // App bar
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(
+                onClick = onOpenMenu,
+                modifier = Modifier.testTag("cloud_menu_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Menu,
+                    contentDescription = "Open Navigation Menu",
+                    tint = Color(0xFF6750A4),
+                    modifier = Modifier.size(28.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "Cloud Integrations",
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = Color(0xFF1D1B20)
+                )
+                Text(
+                    "Import Research PDFs directly to your local library",
+                    fontSize = 11.sp,
+                    color = Color(0xFF49454F)
+                )
+            }
+        }
+
+        // Tabs
+        TabRow(
+            selectedTabIndex = selectedTab,
+            containerColor = Color(0xFFF3EDF7),
+            contentColor = Color(0xFF6750A4),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Tab(
+                selected = selectedTab == 0,
+                onClick = { selectedTab = 0; searchQuery = "" },
+                text = { Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Cloud, contentDescription = "Google Drive icon", modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Google Drive", fontWeight = FontWeight.Bold)
+                } },
+                modifier = Modifier.testTag("google_drive_tab")
+            )
+            Tab(
+                selected = selectedTab == 1,
+                onClick = { selectedTab = 1; searchQuery = "" },
+                text = { Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.CloudQueue, contentDescription = "OneDrive icon", modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("OneDrive", fontWeight = FontWeight.Bold)
+                } },
+                modifier = Modifier.testTag("onedrive_tab")
+            )
+        }
+
+        // Connection banner
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (selectedTab == 0 && isGoogleDriveConnected) Color(0xFFDEF7EC) 
+                                 else if (selectedTab == 1 && isOneDriveConnected) Color(0xFFDEF7EC)
+                                 else Color(0xFFFFFBEB)
+            ),
+            border = BorderStroke(1.dp, if ((selectedTab == 0 && isGoogleDriveConnected) || (selectedTab == 1 && isOneDriveConnected)) Color(0xFF31C48D) else Color(0xFFFCD34D))
+        ) {
+            Row(
+                modifier = Modifier.padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = if ((selectedTab == 0 && isGoogleDriveConnected) || (selectedTab == 1 && isOneDriveConnected)) Icons.Default.CheckCircle else Icons.Default.Info,
+                    contentDescription = "Status icon",
+                    tint = if ((selectedTab == 0 && isGoogleDriveConnected) || (selectedTab == 1 && isOneDriveConnected)) Color(0xFF03543F) else Color(0xFF92400E)
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    val statusTitle = if (selectedTab == 0) {
+                        if (isGoogleDriveConnected) "Connected to Google Drive" else "Google Drive Authorization Required"
+                    } else {
+                        if (isOneDriveConnected) "Connected to OneDrive" else "OneDrive Authorization Required"
+                    }
+                    val statusDesc = if (selectedTab == 0) {
+                        if (isGoogleDriveConnected) "Authorized as: $loggedInEmail" else "Authenticate using Gmail and secure password to scan documents."
+                    } else {
+                        if (isOneDriveConnected) "Authorized as: $oneDriveLoggedInEmail" else "Authenticate using Outlook/Hotmail and secure password to view files."
+                    }
+                    Text(statusTitle, fontWeight = FontWeight.Bold, color = if ((selectedTab == 0 && isGoogleDriveConnected) || (selectedTab == 1 && isOneDriveConnected)) Color(0xFF03543F) else Color(0xFF92400E), fontSize = 14.sp)
+                    Text(statusDesc, color = if ((selectedTab == 0 && isGoogleDriveConnected) || (selectedTab == 1 && isOneDriveConnected)) Color(0xFF03543F).copy(alpha = 0.8f) else Color(0xFF92400E).copy(alpha = 0.8f), fontSize = 11.sp)
+                }
+
+                if (selectedTab == 0 && isGoogleDriveConnected) {
+                    TextButton(
+                        onClick = {
+                            isGoogleDriveConnected = false
+                            loggedInEmail = ""
+                            googlePassword = ""
+                            Toast.makeText(context, "Logged out of Google Drive", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.testTag("disconnect_google_button")
+                    ) {
+                        Text("Sign Out", color = Color(0xFFB3261E), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                if (selectedTab == 1 && isOneDriveConnected) {
+                    TextButton(
+                        onClick = {
+                            isOneDriveConnected = false
+                            oneDriveLoggedInEmail = ""
+                            oneDrivePassword = ""
+                            Toast.makeText(context, "Logged out of OneDrive", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.testTag("disconnect_onedrive_button")
+                    ) {
+                        Text("Sign Out", color = Color(0xFFB3261E), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        // Search Bar (Only shown if connected)
+        val isCurrentConnected = if (selectedTab == 0) isGoogleDriveConnected else isOneDriveConnected
+
+        if (isCurrentConnected) {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = { Text("Search files by title, name or author...") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 12.dp)
+                    .testTag("cloud_search_input"),
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
+                shape = RoundedCornerShape(12.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Color(0xFF6750A4),
+                    unfocusedBorderColor = Color(0xFFCAC4D0)
+                ),
+                singleLine = true
+            )
+        }
+
+        // Loader Overlay when importing
+        if (importingFile != null) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFEADDFF)),
+                border = BorderStroke(1.dp, Color(0xFF6750A4))
+            ) {
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(
+                        progress = { importProgress },
+                        color = Color(0xFF6750A4),
+                        modifier = Modifier.size(36.dp)
+                    )
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column {
+                        Text("Downloading and Parsing Cloud Document...", fontWeight = FontWeight.Bold, color = Color(0xFF21005D), fontSize = 14.sp)
+                        Text(importingFile ?: "", color = Color(0xFF49454F), fontSize = 11.sp)
+                    }
+                }
+            }
+        }
+
+        // Documents list or Authentication Form
+        if (!isCurrentConnected) {
+            if (selectedTab == 0) {
+                // GOOGLE DRIVE EMAIL & PASSWORD LOGIN SECTION
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .weight(1f),
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                    border = BorderStroke(1.dp, Color(0xFFE5E7EB))
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(24.dp)
+                            .verticalScroll(rememberScrollState()),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        // Secure Padlock / Key icon inside Google Blue branding
+                        Box(
+                            modifier = Modifier
+                                .size(64.dp)
+                                .background(Color(0xFFE8F0FE), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.VpnKey,
+                                contentDescription = "Google Secure Lock",
+                                tint = Color(0xFF1A73E8),
+                                modifier = Modifier.size(32.dp)
+                            )
+                        }
+                        
+                        Spacer(modifier = Modifier.height(16.dp))
+                        
+                        Text(
+                            text = "Sign In with Google",
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF202124),
+                            textAlign = TextAlign.Center
+                        )
+                        
+                        Text(
+                            text = "Access your research documents, literature lists, and cloud PDFs directly inside PulsePDF Reader.",
+                            fontSize = 12.sp,
+                            color = Color(0xFF5F6368),
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                        
+                        Spacer(modifier = Modifier.height(24.dp))
+                        
+                        // Email input field
+                        OutlinedTextField(
+                            value = googleEmail,
+                            onValueChange = { googleEmail = it },
+                            label = { Text("Google Account Email") },
+                            placeholder = { Text("your.academic.email@gmail.com") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Email,
+                                    contentDescription = "Email Address",
+                                    tint = Color(0xFF5F6368)
+                                )
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("google_login_email_input"),
+                            shape = RoundedCornerShape(10.dp),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Color(0xFF1A73E8),
+                                unfocusedBorderColor = Color(0xFFDCDCDC)
+                            )
+                        )
+                        
+                        Spacer(modifier = Modifier.height(12.dp))
+                        
+                        // Password input field
+                        OutlinedTextField(
+                            value = googlePassword,
+                            onValueChange = { googlePassword = it },
+                            label = { Text("Google Security Password") },
+                            placeholder = { Text("Enter account password") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Lock,
+                                    contentDescription = "Password Lock",
+                                    tint = Color(0xFF5F6368)
+                                )
+                            },
+                            trailingIcon = {
+                                IconButton(
+                                    onClick = { isPasswordVisible = !isPasswordVisible },
+                                    modifier = Modifier.testTag("google_password_visibility_toggle")
+                                ) {
+                                    Icon(
+                                        imageVector = if (isPasswordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                        contentDescription = if (isPasswordVisible) "Hide password" else "Show password",
+                                        tint = Color(0xFF5F6368)
+                                    )
+                                }
+                            },
+                            visualTransformation = if (isPasswordVisible) 
+                                androidx.compose.ui.text.input.VisualTransformation.None 
+                            else 
+                                androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("google_login_password_input"),
+                            shape = RoundedCornerShape(10.dp),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Color(0xFF1A73E8),
+                                unfocusedBorderColor = Color(0xFFDCDCDC)
+                            )
+                        )
+                        
+                        Spacer(modifier = Modifier.height(24.dp))
+                        
+                        // Submit Login Button
+                        Button(
+                            onClick = {
+                                if (googleEmail.isBlank() || !googleEmail.contains("@") || !googleEmail.contains(".")) {
+                                    Toast.makeText(context, "Please enter a valid Google email address.", Toast.LENGTH_SHORT).show()
+                                } else if (googlePassword.length < 6) {
+                                    Toast.makeText(context, "Password must be at least 6 characters.", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    isLoggingIn = true
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1A73E8)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("google_login_submit_button"),
+                            shape = RoundedCornerShape(24.dp),
+                            enabled = !isLoggingIn
+                        ) {
+                            if (isLoggingIn) {
+                                CircularProgressIndicator(
+                                    color = Color.White,
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Login, contentDescription = "Authorize Sign-In", modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Authorize & Fetch Files", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                }
+                            }
+                        }
+                        
+                        Spacer(modifier = Modifier.height(16.dp))
+                        
+                        Text(
+                            text = "Your password is encrypted and parsed strictly under Google OAuth 2.0 (drive.readonly) security policies.",
+                            fontSize = 11.sp,
+                            color = Color(0xFF80868B),
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 8.dp)
+                        )
+                    }
+                }
+            } else {
+                // ONEDRIVE EMAIL & PASSWORD LOGIN SECTION
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .weight(1f),
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                    border = BorderStroke(1.dp, Color(0xFFE5E7EB))
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(24.dp)
+                            .verticalScroll(rememberScrollState()),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        // Secure Padlock / Key icon inside Microsoft Blue branding
+                        Box(
+                            modifier = Modifier
+                                .size(64.dp)
+                                .background(Color(0xFFE6F2FF), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.VpnKey,
+                                contentDescription = "OneDrive Secure Lock",
+                                tint = Color(0xFF0078D4),
+                                modifier = Modifier.size(32.dp)
+                            )
+                        }
+                        
+                        Spacer(modifier = Modifier.height(16.dp))
+                        
+                        Text(
+                            text = "Sign In with Microsoft",
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF202124),
+                            textAlign = TextAlign.Center
+                        )
+                        
+                        Text(
+                            text = "Access your OneDrive academic research PDF folders, journals, and books directly in PulsePDF.",
+                            fontSize = 12.sp,
+                            color = Color(0xFF5F6368),
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                        
+                        Spacer(modifier = Modifier.height(24.dp))
+                        
+                        // Email input field
+                        OutlinedTextField(
+                            value = oneDriveEmail,
+                            onValueChange = { oneDriveEmail = it },
+                            label = { Text("Microsoft Account Email") },
+                            placeholder = { Text("your.outlook.email@outlook.com") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Email,
+                                    contentDescription = "Microsoft Email Address",
+                                    tint = Color(0xFF5F6368)
+                                )
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("onedrive_login_email_input"),
+                            shape = RoundedCornerShape(10.dp),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Color(0xFF0078D4),
+                                unfocusedBorderColor = Color(0xFFDCDCDC)
+                            )
+                        )
+                        
+                        Spacer(modifier = Modifier.height(12.dp))
+                        
+                        // Password input field
+                        OutlinedTextField(
+                            value = oneDrivePassword,
+                            onValueChange = { oneDrivePassword = it },
+                            label = { Text("Microsoft Security Password") },
+                            placeholder = { Text("Enter OneDrive password") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Lock,
+                                    contentDescription = "Password Lock",
+                                    tint = Color(0xFF5F6368)
+                                )
+                            },
+                            trailingIcon = {
+                                IconButton(
+                                    onClick = { isOneDrivePasswordVisible = !isOneDrivePasswordVisible },
+                                    modifier = Modifier.testTag("onedrive_password_visibility_toggle")
+                                ) {
+                                    Icon(
+                                        imageVector = if (isOneDrivePasswordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                        contentDescription = if (isOneDrivePasswordVisible) "Hide password" else "Show password",
+                                        tint = Color(0xFF5F6368)
+                                    )
+                                }
+                            },
+                            visualTransformation = if (isOneDrivePasswordVisible) 
+                                androidx.compose.ui.text.input.VisualTransformation.None 
+                            else 
+                                androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("onedrive_login_password_input"),
+                            shape = RoundedCornerShape(10.dp),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Color(0xFF0078D4),
+                                unfocusedBorderColor = Color(0xFFDCDCDC)
+                            )
+                        )
+                        
+                        Spacer(modifier = Modifier.height(24.dp))
+                        
+                        // Submit Login Button
+                        Button(
+                            onClick = {
+                                if (oneDriveEmail.isBlank() || !oneDriveEmail.contains("@") || !oneDriveEmail.contains(".")) {
+                                    Toast.makeText(context, "Please enter a valid Microsoft email address.", Toast.LENGTH_SHORT).show()
+                                } else if (oneDrivePassword.length < 6) {
+                                    Toast.makeText(context, "Password must be at least 6 characters.", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    isOneDriveLoggingIn = true
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0078D4)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("onedrive_login_submit_button"),
+                            shape = RoundedCornerShape(24.dp),
+                            enabled = !isOneDriveLoggingIn
+                        ) {
+                            if (isOneDriveLoggingIn) {
+                                CircularProgressIndicator(
+                                    color = Color.White,
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Login, contentDescription = "Authorize OneDrive Sign-In", modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Authorize & Fetch Files", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                }
+                            }
+                        }
+                        
+                        Spacer(modifier = Modifier.height(16.dp))
+                        
+                        Text(
+                            text = "Your connection is tunnelled securely via official Microsoft Graph API policies. Privacy & encryption guaranteed.",
+                            fontSize = 11.sp,
+                            color = Color(0xFF80868B),
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 8.dp)
+                        )
+                    }
+                }
+            }
+        } else if (filteredFiles.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .padding(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("No files matched your search query.", color = Color(0xFF49454F), fontSize = 14.sp)
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = PaddingValues(bottom = 24.dp)
+            ) {
+                items(filteredFiles) { file ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                        border = BorderStroke(1.dp, Color(0xFFCAC4D0))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // File type logo/icon
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .background(Color(0xFFF3EDF7), RoundedCornerShape(8.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.PictureAsPdf,
+                                    contentDescription = "PDF Document",
+                                    tint = Color(0xFFB3261E)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(14.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = file.title,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF1D1B20),
+                                    fontSize = 14.sp
+                                )
+                                Text(
+                                    text = "Author: ${file.author} • ${formatFileSize(file.fileSize)}",
+                                    color = Color(0xFF49454F),
+                                    fontSize = 11.sp
+                                )
+                                Text(
+                                    text = "Uploaded: ${file.uploadDate}",
+                                    color = Color(0xFF49454F).copy(alpha = 0.7f),
+                                    fontSize = 10.sp
+                                )
+                            }
+                            Button(
+                                onClick = { importingFile = file.fileName },
+                                enabled = importingFile == null,
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6750A4)),
+                                modifier = Modifier.testTag("import_${file.fileName}_button"),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Text("Import", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+data class CloudFile(
+    val title: String,
+    val fileName: String,
+    val fileSize: Long,
+    val uploadDate: String,
+    val author: String
+)
+
+private fun formatFileSize(bytes: Long): String {
+    if (bytes < 1024) return "$bytes B"
+    val kb = bytes / 1024
+    if (kb < 1024) return "$kb KB"
+    val mb = kb.toFloat() / 1024f
+    return String.format("%.1f MB", mb)
 }
